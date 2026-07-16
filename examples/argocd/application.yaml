@@ -1,0 +1,35 @@
+# OPTIONAL Argo CD Application example for che-android-studio.
+#
+# Syncs deploy/ (the two editor-definition ConfigMaps + the getting-started
+# sample cards, rendered by deploy/kustomization.yaml) into your Che namespace.
+# This is a convenience for GitOps users; you can equally run
+# `hack/register-editors.sh` or `kubectl apply -k deploy/` by hand.
+#
+# Placeholders to edit:
+#   * <ARGOCD_NAMESPACE>  — where Argo CD runs (argocd, or openshift-gitops).
+#   * <GIT_REPO_URL>      — your fork/clone of this repo.
+#   * <CHE_NAMESPACE>     — your Che namespace (eclipse-che / openshift-devspaces).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: che-android-studio
+  namespace: <ARGOCD_NAMESPACE>
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: che-android-studio
+  source:
+    repoURL: "<GIT_REPO_URL>"
+    path: deploy
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: <CHE_NAMESPACE>
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - ServerSideApply=true

@@ -1,0 +1,45 @@
+# Example workspace devfile for che-android-studio.
+#
+# This is a BARE devfile (schema 2.2.0) you can start a workspace from directly
+# — no ConfigMap wrapper. It selects the streamed Android Studio for Platform
+# editor and mounts a per-user home volume; the editor supplies the desktop
+# container (KasmVNC + the IDE), so this devfile only describes the project +
+# volumes.
+#
+# How to use it:
+#   * Dashboard: "Create Workspace" → "Import from Git" pointing at a repo that
+#     contains this file (or paste the raw URL of this file).
+#   * The editor is selected via the .che/che-editor.yaml convention or the
+#     `?che-editor=che-android-studio/asfp/latest` dashboard query param. For
+#     Android Studio (app dev) instead of ASfP, use
+#     `che-android-studio/android-studio/latest`.
+#
+# Register the editors first with hack/register-editors.sh (or deploy/).
+schemaVersion: 2.2.0
+metadata:
+  name: che-android-studio
+  displayName: Android Studio for Platform (streamed desktop)
+  description: |
+    A streamed Android Studio for Platform (AOSP) desktop, delivered as an
+    Eclipse Che editor via KasmVNC. The editor definition supplies the desktop +
+    IDE container; this devfile just carries a project and a persistent home.
+  tags: [Android, AOSP, ASfP, KasmVNC]
+components:
+  # Per-user $HOME — holds IDE caches/config and persists across pod restarts so
+  # the second launch doesn't re-index from scratch. Che provisions the PVC.
+  - name: home
+    volume:
+      size: 50Gi
+  # OPTIONAL: to work against a large source tree (e.g. an AOSP checkout), add a
+  # volume here and mount it in your project. For platform-scale trees you will
+  # want a ReadWriteMany storage class (or a pre-populated PVC); the editor's
+  # runtime container mounts whatever the workspace provides. Example:
+  #
+  #   - name: source
+  #     volume:
+  #       size: 600Gi
+  #
+  # then reference it from a container component's volumeMounts.
+
+# commands: none by default. Add project-specific build/sync commands here as
+# needed (they surface in the Che dashboard's command palette).

@@ -1,0 +1,18 @@
+# Local tool binaries — downloaded on demand, not committed.
+bin/
+
+# Editor
+.idea/
+.vscode/
+
+# Local secrets / scratch
+*.local
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc

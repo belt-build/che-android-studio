@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Minimal openbox config for the che-android-studio kiosk desktop.
+
+  openbox is here only as a window manager so ASfP's IntelliJ frames get sane
+  focus/placement — there is no panel, menu, or launcher (the entrypoint
+  auto-launches ASfP, so none is needed). Two rules for the main IDE window
+  (WM class `studio-asfp`, set by the ASfP .deb's postinst via StartupWMClass):
+  maximize it so it fills the streamed frame, and REMOVE openbox decorations
+  (no titlebar / close / minimize / maximize buttons) — this is a single-app
+  kiosk, and ASfP draws its own window header (custom decorations enabled via
+  the seeded ide.general.xml). The rules are scoped to `type` normal so
+  IntelliJ's dialogs, popups, and the splash screen keep their decorations and
+  remain movable/closable.
+-->
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <focus>
+    <focusNew>yes</focusNew>
+    <followMouse>no</followMouse>
+  </focus>
+
+  <placement>
+    <policy>Smart</policy>
+    <center>yes</center>
+  </placement>
+
+  <theme>
+    <!-- Flat dark theme so dialog decorations blend with the dark IDE instead
+         of openbox's stock bright blue. Installed by the desktop layer to
+         /usr/share/themes/StudioDark/openbox-3/themerc. The main IDE window is
+         undecorated (see <applications> below); this governs dialogs/popups. -->
+    <name>StudioDark</name>
+    <titleLayout>NLIMC</titleLayout>
+    <keepBorder>no</keepBorder>
+  </theme>
+
+  <desktops>
+    <number>1</number>
+  </desktops>
+
+  <applications>
+    <!-- The ASfP main window: maximized, NO WM decorations, focused. -->
+    <application class="studio-asfp" type="normal">
+      <maximized>yes</maximized>
+      <focus>yes</focus>
+      <decor>no</decor>
+    </application>
+    <!-- Fallback: JetBrains sets WM_CLASS to "jetbrains-studio" on some
+         builds; match that too so the IDE always comes up maximized + bare. -->
+    <application class="jetbrains-*" type="normal">
+      <maximized>yes</maximized>
+      <focus>yes</focus>
+      <decor>no</decor>
+    </application>
+  </applications>
+</openbox_config>

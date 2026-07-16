@@ -1,0 +1,75 @@
+# che-android-studio "StudioDark" openbox theme.
+#
+# The main IDE window is undecorated (rc.xml <decor>no</decor>), but DIALOGS keep
+# decorations — openbox's stock theme paints those a bright blue, which clashes
+# with the dark IDE. This is a minimal flat dark theme so dialog title bars/
+# borders blend in. Installed to /usr/share/themes/StudioDark/openbox-3/themerc
+# and selected via rc.xml <theme><name>StudioDark</name>.
+
+# --- Window geometry --------------------------------------------------------
+padding.width: 6
+padding.height: 4
+border.width: 1
+window.client.padding.width: 0
+window.client.padding.height: 0
+window.handle.width: 0
+menu.overlap: 0
+
+# --- Borders ----------------------------------------------------------------
+window.active.border.color: #1e1f22
+window.inactive.border.color: #1e1f22
+window.active.client.color: #1e1f22
+window.inactive.client.color: #1e1f22
+
+# --- Title bar (flat dark) --------------------------------------------------
+window.active.title.bg: flat solid
+window.active.title.bg.color: #2b2d30
+window.inactive.title.bg: flat solid
+window.inactive.title.bg.color: #1e1f22
+
+window.active.label.text.color: #dfe1e5
+window.inactive.label.text.color: #868a91
+window.label.text.justify: center
+
+window.active.label.bg: parentrelative
+window.inactive.label.bg: parentrelative
+
+# --- Title buttons (flat, subtle) -------------------------------------------
+window.active.button.unpressed.bg: flat solid
+window.active.button.unpressed.bg.color: #2b2d30
+window.active.button.unpressed.image.color: #dfe1e5
+window.inactive.button.unpressed.bg: flat solid
+window.inactive.button.unpressed.bg.color: #1e1f22
+window.inactive.button.unpressed.image.color: #868a91
+
+window.active.button.pressed.bg: flat solid
+window.active.button.pressed.bg.color: #3574f0
+window.active.button.pressed.image.color: #ffffff
+window.active.button.hover.bg: flat solid
+window.active.button.hover.bg.color: #3a3d41
+window.active.button.hover.image.color: #ffffff
+
+# --- Menus (dark; openbox right-click, rarely used in the kiosk) ------------
+menu.border.width: 1
+menu.border.color: #1e1f22
+menu.title.bg: flat solid
+menu.title.bg.color: #2b2d30
+menu.title.text.color: #dfe1e5
+menu.items.bg: flat solid
+menu.items.bg.color: #2b2d30
+menu.items.text.color: #dfe1e5
+menu.items.active.bg: flat solid
+menu.items.active.bg.color: #3574f0
+menu.items.active.text.color: #ffffff
+
+# --- On-screen display (resize/move popups) ---------------------------------
+osd.border.width: 1
+osd.border.color: #1e1f22
+osd.bg: flat solid
+osd.bg.color: #2b2d30
+osd.label.text.color: #dfe1e5
+osd.label.active.text.color: #dfe1e5
+
+# --- Fonts ------------------------------------------------------------------
+window.active.label.text.font: shadow=n
+window.inactive.label.text.font: shadow=n

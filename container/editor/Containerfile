@@ -1,0 +1,80 @@
+# {asfp,studio}-editor — the IDE injector image.
+#
+# This image's ONLY job is to carry the relocatable IDE payload (a self-contained
+# /opt tree) plus the entrypoint + first-run seed assets, and stage them into a
+# shared volume at workspace start. The editor definition's injector `command`
+# does `cp -a` of /opt/che-ide + the assets into the shared volume; the
+# container-contribution then runs the entrypoint in the DEV container (which
+# provides KasmVNC, openbox, the SDK, the JCEF JBR). openbox/KasmVNC are NOT
+# here — they live in the dev image (non-relocatable apt packages).
+#
+# Parameterized by IDE_FLAVOR so ONE Containerfile builds both flavors:
+#   asfp   → ASfP (.deb)            → asfp-editor
+#   studio → Android Studio (.tgz)  → studio-editor
+#
+# Build (context = container/):
+#   podman build --build-arg IDE_FLAVOR=asfp   -t asfp-editor:latest   -f container/editor/Containerfile container/
+#   podman build --build-arg IDE_FLAVOR=studio -t studio-editor:latest -f container/editor/Containerfile container/
+
+FROM docker.io/library/ubuntu:22.04
+ARG DEBIAN_FRONTEND=noninteractive
+
+ARG IDE_FLAVOR=asfp
+
+# ASfP (.deb) coordinates. Codename has a literal space → %20 in the URL.
+ARG ASFP_VERSION=2025.3.2.6
+ARG ASFP_CODENAME=Panda%202
+ARG ASFP_DOWNLOAD_URL=https://dl.google.com/android/asfp/asfp-${ASFP_CODENAME}-${ASFP_VERSION}-linux.deb
+
+# Regular Android Studio (.tar.gz) coordinates. Bump together; the tarball
+# extracts to a top-level `android-studio/` dir.
+ARG STUDIO_VERSION=2025.1.1.13
+ARG STUDIO_DOWNLOAD_URL=https://dl.google.com/dl/android/studio/ide-zips/${STUDIO_VERSION}/android-studio-${STUDIO_VERSION}-linux.tar.gz
+
+# Tools to fetch + unpack. The ASfP .deb postinst needs:
+#   * desktop-file-utils — desktop-file-edit/-install (registers the launcher)
+#   * sudo — the postinst runs `sudo sed -i ...` to rewrite dpkg's file lists.
+#     We're root during the build so it's a no-op wrapper, but it must EXIST on
+#     PATH or dpkg --configure fails with "sudo: not found" (exit 127).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl \
+        desktop-file-utils sudo \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Passwordless sudo so the ASfP postinst's `sudo sed` never prompts (build runs
+# as root, so it's a passthrough — but make it unconditional).
+RUN echo 'ALL ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+
+# Stage the IDE payload to a flavor-neutral path: /opt/che-ide. The entrypoint
+# resolves the actual launcher under it.
+RUN set -eux; \
+    mkdir -p /opt; \
+    if [ "${IDE_FLAVOR}" = "asfp" ]; then \
+        deb=/tmp/asfp.deb; \
+        curl -fsSL -o "${deb}" "${ASFP_DOWNLOAD_URL}"; \
+        apt-get update; \
+        apt-get install -y --no-install-recommends "${deb}"; \
+        rm -f "${deb}"; apt-get clean; rm -rf /var/lib/apt/lists/*; \
+        ln -s /opt/android-studio-for-platform /opt/che-ide; \
+    elif [ "${IDE_FLAVOR}" = "studio" ]; then \
+        tgz=/tmp/studio.tgz; \
+        curl -fsSL -o "${tgz}" "${STUDIO_DOWNLOAD_URL}"; \
+        tar -xzf "${tgz}" -C /opt; \
+        rm -f "${tgz}"; \
+        ln -s /opt/android-studio /opt/che-ide; \
+    else \
+        echo "ERROR: unknown IDE_FLAVOR='${IDE_FLAVOR}' (expected asfp|studio)"; exit 1; \
+    fi; \
+    test -x "$(readlink -f /opt/che-ide)/bin/studio"
+
+# Record the flavor so the injector/entrypoint can branch (config dir name,
+# launcher, seed templates differ slightly between ASfP and Android Studio).
+ENV IDE_FLAVOR=${IDE_FLAVOR}
+
+# First-run seed templates + IDE vmoptions + the desktop session entrypoint.
+# These are copied into the shared volume by the injector command and consumed
+# by the entrypoint running in the dev container.
+COPY skel/                /opt/che-android-studio/skel/
+COPY studio.vmoptions     /opt/che-android-studio/studio.vmoptions
+COPY openbox/rc.xml       /opt/che-android-studio/openbox-rc.xml
+COPY entrypoint.sh        /opt/che-android-studio/entrypoint.sh
+RUN chmod -R a+rX /opt/che-android-studio /opt/che-ide "$(readlink -f /opt/che-ide)"

@@ -1,0 +1,37 @@
+<script>
+/* che-android-studio: sub-path websocket fix.
+ *
+ * KasmVNC's noVNC client builds its websocket URL from the host ROOT plus the
+ * `path` setting (default "websockify") — i.e. wss://<host>/websockify. But
+ * under Eclipse Che / Dev Spaces the client is served at a per-workspace
+ * sub-path like /developer/<workspace>/6901/, and Che's gateway only routes
+ * the websocket under THAT prefix. So the default root path 404s/418s
+ * ("Firefox can't establish a connection to wss://host/websockify").
+ *
+ * noVNC reads the `path` setting from the URL query (?path=) / hash (#path=)
+ * before connecting. We derive the correct path from where THIS page is served
+ * (location.pathname) and inject it as ?path= before the module bundle loads,
+ * if the caller hasn't already set one. Workspace-agnostic — no hardcoded ID.
+ *
+ * (We deliberately do NOT force ?resize=remote here. noVNC persists `resize`
+ * in the browser's localStorage and that stored value wins over the URL default
+ * on return visits, so forcing it was inconsistent. Users can pick their VNC
+ * resolution mode from the noVNC control bar.)
+ */
+(function () {
+  try {
+    var url = new URL(window.location.href);
+    if (!url.searchParams.has('path')) {
+      // pathname e.g. "/developer/empty-kwbp/6901/" (or ".../vnc.html").
+      // Strip any trailing filename, keep the dir, append "websockify",
+      // and drop the leading slash (noVNC prepends "/" itself).
+      var dir = window.location.pathname.replace(/[^/]*$/, '');
+      var wsPath = (dir + 'websockify').replace(/^\/+/, '');
+      url.searchParams.set('path', wsPath);
+      window.history.replaceState(null, '', url.toString());
+    }
+  } catch (e) {
+    /* best-effort; if anything throws, fall back to noVNC's default */
+  }
+})();
+</script>

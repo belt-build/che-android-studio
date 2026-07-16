@@ -1,0 +1,48 @@
+# Kustomization for che-android-studio's Che editor definitions + samples.
+#
+# These are the cluster-side deliverables that register the streamed
+# Android Studio / ASfP editors in an Eclipse Che (or OpenShift Dev Spaces)
+# install. Apply them into your Che namespace — directly:
+#
+#   kubectl -n eclipse-che apply -k deploy/
+#
+# or via the optional Argo CD example under examples/argocd/.
+#
+# The editor-definition files (asfp-editor-definition.yaml,
+# studio-editor-definition.yaml) are BARE devfiles, not Kubernetes objects —
+# the dashboard reads them from LABELED ConfigMaps
+# (app.kubernetes.io/part-of=che.eclipse.org,
+#  app.kubernetes.io/component=editor-definition). configMapGenerator wraps each
+# devfile into exactly such a ConfigMap. (hack/register-editors.sh does the same
+# wrapping without kustomize, and auto-detects the Che namespace — use it if you
+# don't want to run kustomize.)
+#
+# Set the namespace to match your Che install (eclipse-che upstream,
+# openshift-devspaces on OpenShift Dev Spaces).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: eclipse-che
+
+# The getting-started sample cards ship as a normal (already-labeled) ConfigMap.
+resources:
+  - getting-started-samples.yaml
+
+# Wrap each bare editor-definition devfile into a labeled editor-definition
+# ConfigMap the Che dashboard will serve at /dashboard/api/editors.
+configMapGenerator:
+  - name: che-android-studio-asfp-editor
+    files:
+      - asfp-editor-definition.yaml
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/part-of: che.eclipse.org
+        app.kubernetes.io/component: editor-definition
+  - name: che-android-studio-studio-editor
+    files:
+      - studio-editor-definition.yaml
+    options:
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/part-of: che.eclipse.org
+        app.kubernetes.io/component: editor-definition

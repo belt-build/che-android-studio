@@ -1,0 +1,215 @@
+name: ci
+
+# Test → build → smoke. On main: build + push all five images to GHCR. On PRs:
+# validate + build only (no push, so forks need no registry creds).
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+env:
+  # ghcr.io/<owner>/che-android-studio — lowercased owner (GHCR requires it).
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/che-android-studio
+
+jobs:
+  # --- Fast validation (no Docker) -----------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clean-room guard (no internal tokens)
+        run: |
+          # Fail if any internal/proprietary token reappears. This is the
+          # regression guard that keeps the repo clean-room over time.
+          # (Scope excludes .git and this workflow file, which names the tokens.
+          # NOTE: openshift-devspaces / openshift-gitops are PUBLIC OpenShift
+          # product namespaces this tool legitimately references — not internal.)
+          pattern='connect-asfp|hatci|hyundai|zscaler|gerrit|jfrog|gitlab|auto-hmg|isw-containers|sectigo|connect-builder|connect-cluster|connect-mirror|connect-android-sdk|connect-studio'
+          if grep -rniE "$pattern" . \
+                --exclude-dir=.git \
+                --exclude=ci.yml ; then
+            echo "::error::Internal/proprietary token found (see matches above)."
+            exit 1
+          fi
+          echo "clean-room guard passed"
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck container/entrypoint.sh \
+                     container/desktop/setup-desktop.sh \
+                     hack/register-editors.sh
+
+      - name: hadolint (Containerfiles)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          # One action invocation lints one file; loop via recursive-glob below.
+          dockerfile: container/sdk/Containerfile
+
+      - name: hadolint (remaining Containerfiles)
+        run: |
+          docker run --rm -i hadolint/hadolint hadolint - < container/dev/asfp/Containerfile
+          docker run --rm -i hadolint/hadolint hadolint - < container/dev/studio/Containerfile
+          docker run --rm -i hadolint/hadolint hadolint - < container/editor/Containerfile
+
+      - name: Validate YAML + python
+        run: |
+          python -m pip install --quiet pyyaml
+          # Editor definitions, samples, example devfile, argocd examples.
+          for f in deploy/asfp-editor-definition.yaml \
+                   deploy/studio-editor-definition.yaml \
+                   deploy/getting-started-samples.yaml \
+                   examples/devfile.yaml; do
+            echo "yaml: $f"
+            python -c "import sys,yaml; list(yaml.safe_load_all(open(sys.argv[1])))" "$f"
+          done
+          python -m py_compile container/inject-subpath-fix.py
+
+  # --- Build (and push on main) --------------------------------------------
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # Only needed when we push (main / tags). PRs build without creds.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set tags
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      # sdk first — the dev images build FROM it. We load it into the local
+      # docker so the dev builds resolve FROM even when push=false (PRs).
+      - name: Build sdk
+        uses: docker/build-push-action@v6
+        with:
+          context: container
+          file: container/sdk/Containerfile
+          load: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/sdk:latest
+            ${{ env.IMAGE_PREFIX }}/sdk:${{ steps.meta.outputs.sha }}
+          push: ${{ steps.meta.outputs.push }}
+          cache-from: type=gha,scope=sdk
+          cache-to: type=gha,scope=sdk,mode=max
+
+      - name: Build asfp-dev
+        uses: docker/build-push-action@v6
+        with:
+          context: container
+          file: container/dev/asfp/Containerfile
+          build-args: |
+            IMAGE_PREFIX=${{ env.IMAGE_PREFIX }}
+            SDK_TAG=latest
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/asfp-dev:latest
+            ${{ env.IMAGE_PREFIX }}/asfp-dev:${{ steps.meta.outputs.sha }}
+          push: ${{ steps.meta.outputs.push }}
+          cache-from: type=gha,scope=asfp-dev
+          cache-to: type=gha,scope=asfp-dev,mode=max
+
+      - name: Build studio-dev
+        uses: docker/build-push-action@v6
+        with:
+          context: container
+          file: container/dev/studio/Containerfile
+          build-args: |
+            IMAGE_PREFIX=${{ env.IMAGE_PREFIX }}
+            SDK_TAG=latest
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/studio-dev:latest
+            ${{ env.IMAGE_PREFIX }}/studio-dev:${{ steps.meta.outputs.sha }}
+          push: ${{ steps.meta.outputs.push }}
+          cache-from: type=gha,scope=studio-dev
+          cache-to: type=gha,scope=studio-dev,mode=max
+
+      - name: Build asfp-editor
+        uses: docker/build-push-action@v6
+        with:
+          context: container
+          file: container/editor/Containerfile
+          build-args: IDE_FLAVOR=asfp
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/asfp-editor:latest
+            ${{ env.IMAGE_PREFIX }}/asfp-editor:${{ steps.meta.outputs.sha }}
+          push: ${{ steps.meta.outputs.push }}
+          cache-from: type=gha,scope=asfp-editor
+          cache-to: type=gha,scope=asfp-editor,mode=max
+
+      - name: Build studio-editor
+        uses: docker/build-push-action@v6
+        with:
+          context: container
+          file: container/editor/Containerfile
+          build-args: IDE_FLAVOR=studio
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/studio-editor:latest
+            ${{ env.IMAGE_PREFIX }}/studio-editor:${{ steps.meta.outputs.sha }}
+          push: ${{ steps.meta.outputs.push }}
+          cache-from: type=gha,scope=studio-editor
+          cache-to: type=gha,scope=studio-editor,mode=max
+
+  # --- Smoke test (main only; images are published) ------------------------
+  smoke:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: SDK smoke — installed API levels + no emulator
+        run: |
+          img="${IMAGE_PREFIX}/sdk:latest"
+          echo "== installed packages =="
+          docker run --rm "$img" sdkmanager --list_installed | tee /tmp/pkgs.txt
+          for lvl in 34 36; do
+            grep -q "platforms;android-${lvl}" /tmp/pkgs.txt \
+              || { echo "::error::platforms;android-${lvl} missing"; exit 1; }
+          done
+          if docker run --rm "$img" sh -c 'test -d "$ANDROID_SDK_ROOT/emulator"'; then
+            echo "::error::emulator should not be installed"; exit 1
+          fi
+          echo "sdk smoke passed"
+
+      - name: Desktop smoke — KasmVNC serves plain HTTP 200 on 6901
+        run: |
+          img="${IMAGE_PREFIX}/asfp-dev:latest"
+          # Run the entrypoint; it starts KasmVNC on 6901. The IDE payload isn't
+          # staged (no editor injector here), so the IDE won't launch — but
+          # KasmVNC must still come up and answer HTTP 200 (proves
+          # -DisableBasicAuth + require_ssl:false survived the rename).
+          docker run -d --name smoke -p 6901:6901 "$img"
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null http://localhost:6901/; then
+              echo "desktop smoke passed (HTTP 200 on 6901)"; ok=1; break
+            fi
+            sleep 2
+          done
+          docker logs smoke || true
+          docker rm -f smoke || true
+          [ "${ok:-0}" = "1" ] || { echo "::error::KasmVNC did not serve on 6901"; exit 1; }

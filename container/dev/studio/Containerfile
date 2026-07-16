@@ -1,0 +1,44 @@
+# studio-dev — the regular Android Studio (app-dev) flavor's dev/runtime
+# container. Same lean SDK base as asfp-dev; differs only by the IDE flavor env.
+#
+# Layer order: SDK base (che-android-studio-sdk, which already has SDK + JDK +
+# JCEF JBR on a lean Ubuntu) → desktop.
+#
+# Build (context = container/):
+#   podman build -t studio-dev:latest -f container/dev/studio/Containerfile container/
+
+ARG SDK_TAG=latest
+ARG IMAGE_PREFIX=ghcr.io/kirkbrauer/che-android-studio
+FROM ${IMAGE_PREFIX}/sdk:${SDK_TAG}
+ARG DEBIAN_FRONTEND=noninteractive
+
+# SDK + JCEF JBR + ANDROID_SDK_ROOT/PATH already come from the base image.
+ENV JCEF_JBR_DIR=/opt/che-android-studio/jbr-jcef
+
+# Regular Android Studio config-dir version (AndroidStudio<major.minor>) — the
+# entrypoint seeds first-run options into this dir. Keep in sync with the
+# Android Studio version baked in the studio injector image.
+ARG STUDIO_MAJOR_MINOR=2025.1
+ENV ASFP_MAJOR_MINOR=${STUDIO_MAJOR_MINOR} \
+    IDE_FLAVOR=studio
+
+# --- Desktop layer (shared with asfp-dev) ------------------------------------
+# NOTE: copy openbox/rc.xml AFTER setup-desktop installs openbox — if our file
+# is present first, openbox's .deb postinst prompts about the modified conffile
+# and (with no stdin) the build fails.
+COPY kasmvnc-subpath-fix.html /usr/share/che-android-studio/kasmvnc-subpath-fix.html
+COPY inject-subpath-fix.py    /usr/local/bin/che-android-studio-inject-subpath
+COPY desktop/setup-desktop.sh /usr/local/bin/che-android-studio-setup-desktop
+RUN chmod 0755 /usr/local/bin/che-android-studio-setup-desktop \
+                /usr/local/bin/che-android-studio-inject-subpath \
+    && /usr/local/bin/che-android-studio-setup-desktop
+COPY openbox/rc.xml /etc/xdg/openbox/rc.xml
+COPY openbox/dark-themerc /usr/share/themes/StudioDark/openbox-3/themerc
+
+# --- Entrypoint --------------------------------------------------------------
+COPY entrypoint.sh /usr/local/bin/che-android-studio-entrypoint
+RUN chmod 0755 /usr/local/bin/che-android-studio-entrypoint
+
+WORKDIR /home/user
+EXPOSE 6901
+CMD ["/usr/local/bin/che-android-studio-entrypoint"]

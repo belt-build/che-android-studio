@@ -1,0 +1,92 @@
+# che-android-studio-sdk — standalone, headless Android SDK image.
+#
+# A lean, desktop-free image carrying the Android SDK (one or more API levels, NO
+# emulator), a JDK for the SDK tools, and the JCEF-enabled JetBrains Runtime that
+# the IDE flavors boot on (ASfP's Cuttlefish view needs JCEF).
+#
+# Why standalone: this image is reused two ways —
+#   1. as the base for the desktop dev images (asfp-dev, studio-dev), so
+#      sdkmanager runs ONCE here, not per dev image;
+#   2. directly, headless, for regular Android app CI builds (gradle) that need
+#      the SDK but no desktop.
+# It can be rebuilt on its own cadence when the underlying SDKs change.
+#
+# Build: podman build -t che-android-studio-sdk:latest -f container/sdk/Containerfile container/
+
+# Official Ubuntu base.
+FROM docker.io/library/ubuntu:22.04
+ARG DEBIAN_FRONTEND=noninteractive
+
+# JDK for sdkmanager + headless gradle builds; unzip for cmdline-tools; curl +
+# CAs for the downloads. sudo so the workspace user can install packages at
+# runtime (studio-dev inherits this base; asfp-dev also builds on it).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openjdk-17-jdk-headless \
+        ca-certificates curl unzip \
+        sudo \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Passwordless sudo for the arbitrary restricted-SCC UID (it's in group 0).
+# %sudo isn't enough (the UID has no group membership), so allow ALL — fine for
+# a single-user dev container.
+RUN echo 'ALL ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+
+# --- JCEF-enabled JetBrains Runtime -----------------------------------------
+# The bundled ASfP JBR has NO JCEF; the Cuttlefish view (a JCEF webview) needs
+# it. Pin the JBR-with-JCEF build the IDE expects and stage it where the
+# entrypoint will point studio.jdk. Verified URL (302 → JetBrains CDN).
+ARG JCEF_JBR_VERSION=21.0.9-linux-x64-b1163.94
+ARG JCEF_JBR_URL=https://cache-redirector.jetbrains.com/intellij-jbr/jbr_jcef-${JCEF_JBR_VERSION}.tar.gz
+ENV JCEF_JBR_DIR=/opt/che-android-studio/jbr-jcef
+RUN set -eux; \
+    mkdir -p "${JCEF_JBR_DIR}"; \
+    curl -fsSL -o /tmp/jbr-jcef.tar.gz "${JCEF_JBR_URL}"; \
+    tar -xzf /tmp/jbr-jcef.tar.gz -C "${JCEF_JBR_DIR}" --strip-components=1; \
+    rm -f /tmp/jbr-jcef.tar.gz; \
+    test -f "${JCEF_JBR_DIR}/lib/libjcef.so"
+
+# --- Android SDK (one or more API levels, no emulator) ----------------------
+# ANDROID_API_LEVELS / ANDROID_BUILD_TOOLS are space-separated lists — override
+# at build time, e.g. --build-arg ANDROID_API_LEVELS="33 34 35 36". The default
+# installs API 34 + 36 so both are available out of the box.
+ARG ANDROID_SDK_ROOT=/opt/android-sdk
+ARG ANDROID_CMDLINE_TOOLS_VERSION=14742923
+ARG ANDROID_API_LEVELS="34 36"
+ARG ANDROID_BUILD_TOOLS="34.0.0 36.0.0"
+ENV ANDROID_SDK_ROOT=/opt/android-sdk \
+    ANDROID_HOME=/opt/android-sdk \
+    JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
+    ANDROID_API_LEVELS="${ANDROID_API_LEVELS}"
+
+RUN set -eux; \
+    zip=/tmp/cmdline-tools.zip; \
+    curl -fsSL -o "${zip}" \
+        "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip"; \
+    mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"; \
+    unzip -q "${zip}" -d /tmp/cmdline-tools-extract; \
+    # sdkmanager expects to live under cmdline-tools/latest/
+    mv /tmp/cmdline-tools-extract/cmdline-tools "${ANDROID_SDK_ROOT}/cmdline-tools/latest"; \
+    rm -rf "${zip}" /tmp/cmdline-tools-extract; \
+    sdk="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"; \
+    yes | "${sdk}" --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null; \
+    pkgs="platform-tools"; \
+    for lvl in ${ANDROID_API_LEVELS}; do \
+        pkgs="${pkgs} platforms;android-${lvl} sources;android-${lvl}"; \
+    done; \
+    for bt in ${ANDROID_BUILD_TOOLS}; do \
+        pkgs="${pkgs} build-tools;${bt}"; \
+    done; \
+    "${sdk}" --sdk_root="${ANDROID_SDK_ROOT}" ${pkgs}; \
+    chmod -R a+rX "${ANDROID_SDK_ROOT}" /opt/che-android-studio; \
+    for lvl in ${ANDROID_API_LEVELS}; do \
+        test -d "${ANDROID_SDK_ROOT}/platforms/android-${lvl}"; \
+    done; \
+    test ! -d "${ANDROID_SDK_ROOT}/emulator"
+
+# TODO(custom-android-sdk): inject a custom-built Android platform here (replace/
+# augment platforms/android-<L> + register it in the IDE's jdk.table.xml). A
+# runtime drop-in hook (CUSTOM_ANDROID_SDK_DIR) also exists in the entrypoint.
+# The stock android-<L> platforms above are the baseline.
+
+# Put the SDK tools on PATH for headless app-build use of this image.
+ENV PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"

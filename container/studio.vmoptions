@@ -1,0 +1,13 @@
+# che-android-studio VM options for Android Studio / ASfP, supplied to the IDE
+# via the STUDIO_VM_OPTIONS env var (the entrypoint points it here). Kept
+# separate from ASfP's bundled bin/studio64.vmoptions so an IDE upgrade can't
+# clobber it and we don't have to edit a vendored file.
+#
+# UI scaling was intentionally NOT set here: forcing -Dsun.java2d.uiScale over
+# the KasmVNC stream didn't render cleanly (chrome scaled but editor font did
+# not, and native-resolution interactions were inconsistent). Users can set
+# their own scaling + editor font inside the IDE instead.
+
+# Custom window decorations: let the IDE draw its own header/title bar (paired
+# with openbox <decor>no</decor>) for a clean kiosk frame.
+-Dide.win.frame.decorations=true
