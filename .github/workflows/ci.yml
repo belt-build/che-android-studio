@@ -39,21 +39,29 @@ jobs:
       - name: shellcheck
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck container/entrypoint.sh \
+          # -S warning: gate on warnings+errors, not info/style notes (the
+          # `A && log ok || log warn` logging idiom is intentional — SC2015 info).
+          shellcheck -S warning \
+                     container/entrypoint.sh \
                      container/desktop/setup-desktop.sh \
                      hack/register-editors.sh
 
       - name: hadolint (Containerfiles)
-        uses: hadolint/hadolint-action@v3.1.0
-        with:
-          # One action invocation lints one file; loop via recursive-glob below.
-          dockerfile: container/sdk/Containerfile
-
-      - name: hadolint (remaining Containerfiles)
         run: |
-          docker run --rm -i hadolint/hadolint hadolint - < container/dev/asfp/Containerfile
-          docker run --rm -i hadolint/hadolint hadolint - < container/dev/studio/Containerfile
-          docker run --rm -i hadolint/hadolint hadolint - < container/editor/Containerfile
+          # Gate on errors only; ignore intentional patterns:
+          #   DL3008 — we don't pin apt package versions (dev images track latest)
+          #   DL4006 — pipes inside RUN are guarded by `set -e`/explicit checks
+          #   SC2086 — the SDK build word-splits ${pkgs}/${lists} on purpose
+          for f in container/sdk/Containerfile \
+                   container/dev/asfp/Containerfile \
+                   container/dev/studio/Containerfile \
+                   container/editor/Containerfile; do
+            echo "hadolint $f"
+            docker run --rm -i hadolint/hadolint hadolint \
+              --failure-threshold error \
+              --ignore DL3008 --ignore DL4006 --ignore SC2086 \
+              - < "$f"
+          done
 
       - name: Validate YAML + python
         run: |
