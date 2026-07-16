@@ -208,16 +208,20 @@ jobs:
         run: |
           img="${IMAGE_PREFIX}/asfp-dev:latest"
           # Run the entrypoint; it starts KasmVNC on 6901. The IDE payload isn't
-          # staged (no editor injector here), so the IDE won't launch — but
-          # KasmVNC must still come up and answer HTTP 200 (proves
-          # -DisableBasicAuth + require_ssl:false survived the rename).
-          docker run -d --name smoke -p 6901:6901 "$img"
-          for i in $(seq 1 60); do
-            if curl -sf -o /dev/null http://localhost:6901/; then
+          # staged (no editor injector here), so the IDE won't launch and the
+          # skel seeds are absent — but KasmVNC itself must still come up and
+          # answer HTTP 200 (proves -DisableBasicAuth + require_ssl:false survived
+          # the rename). KasmVNC binds -interface 127.0.0.1 (required for Che's
+          # in-pod loopback gateway), which a host-side `-p` mapping can't reach —
+          # so we curl from INSIDE the container's network namespace via exec.
+          docker run -d --name smoke "$img"
+          ok=0
+          for i in $(seq 1 90); do
+            if docker exec smoke curl -sf -o /dev/null http://127.0.0.1:6901/; then
               echo "desktop smoke passed (HTTP 200 on 6901)"; ok=1; break
             fi
             sleep 2
           done
-          docker logs smoke || true
-          docker rm -f smoke || true
-          [ "${ok:-0}" = "1" ] || { echo "::error::KasmVNC did not serve on 6901"; exit 1; }
+          echo "===== container logs ====="; docker logs smoke 2>&1 | tail -60 || true
+          docker rm -f smoke >/dev/null 2>&1 || true
+          [ "$ok" = "1" ] || { echo "::error::KasmVNC did not serve on 6901"; exit 1; }
