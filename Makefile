@@ -13,11 +13,11 @@ CONTAINER_TOOL     ?= podman
 ANDROID_API_LEVELS ?= 34 36
 ANDROID_BUILD_TOOLS ?= 34.0.0 36.0.0
 
-# Five images across the split (build order matters: SDK first, then the dev
-# images that FROM it, then the injectors).
+# Four images across the split. `sdk` is the GUI-capable toolchain base (also the
+# contribution placeholder + the base users extend); the two `*-editor` injectors
+# carry the swappable IDE + relocated KasmVNC. No standalone dev images anymore —
+# the editor CONTRIBUTES the IDE/streaming onto the toolchain container at runtime.
 SDK_IMAGE          ?= sdk
-ASFP_DEV_IMAGE     ?= asfp-dev
-STUDIO_DEV_IMAGE   ?= studio-dev
 ASFP_ED_IMAGE      ?= asfp-editor
 STUDIO_ED_IMAGE    ?= studio-editor
 
@@ -38,27 +38,22 @@ define build_image
 endef
 
 .PHONY: sdk-image
-sdk-image: ## Build the standalone SDK image (configurable API levels).
+sdk-image: ## Build the GUI-capable toolchain base image (configurable API levels).
 	$(call build_image,$(SDK_IMAGE),container/sdk/Containerfile,\
 		--build-arg ANDROID_API_LEVELS="$(ANDROID_API_LEVELS)" \
 		--build-arg ANDROID_BUILD_TOOLS="$(ANDROID_BUILD_TOOLS)")
 
-.PHONY: dev-images
-dev-images: ## Build both dev images (require the sdk image present).
-	$(call build_image,$(ASFP_DEV_IMAGE),container/dev/asfp/Containerfile,--build-arg IMAGE_PREFIX=$(IMAGE_PREFIX))
-	$(call build_image,$(STUDIO_DEV_IMAGE),container/dev/studio/Containerfile,--build-arg IMAGE_PREFIX=$(IMAGE_PREFIX))
-
 .PHONY: editor-images
-editor-images: ## Build both IDE injector images.
+editor-images: ## Build both IDE + KasmVNC injector images.
 	$(call build_image,$(ASFP_ED_IMAGE),container/editor/Containerfile,--build-arg IDE_FLAVOR=asfp)
 	$(call build_image,$(STUDIO_ED_IMAGE),container/editor/Containerfile,--build-arg IDE_FLAVOR=studio)
 
 .PHONY: images
-images: sdk-image dev-images editor-images ## Build all five images (in order).
+images: sdk-image editor-images ## Build all four images.
 
 .PHONY: push
-push: ## Push all five images (:VERSION + :latest).
-	@for img in $(SDK_IMAGE) $(ASFP_DEV_IMAGE) $(STUDIO_DEV_IMAGE) $(ASFP_ED_IMAGE) $(STUDIO_ED_IMAGE); do \
+push: ## Push all four images (:VERSION + :latest).
+	@for img in $(SDK_IMAGE) $(ASFP_ED_IMAGE) $(STUDIO_ED_IMAGE); do \
 		$(CONTAINER_TOOL) push --tls-verify=$(TLS_VERIFY) $(IMAGE_PREFIX)/$$img:$(VERSION); \
 		$(CONTAINER_TOOL) push --tls-verify=$(TLS_VERIFY) $(IMAGE_PREFIX)/$$img:latest; \
 	done

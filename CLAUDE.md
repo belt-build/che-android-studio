@@ -9,32 +9,49 @@ Android Studio / Android Studio for Platform (ASfP) + KasmVNC delivered as a
 selectable **Eclipse Che editor** (works on upstream Che and OpenShift Dev
 Spaces). Streamed desktop, browser-only, SDK pre-baked.
 
-### Image architecture (FIVE images, injector + container-contribution)
+### Image architecture (FOUR images: 1 toolchain base + 2 injectors)
 
-A composable stack modeled on Che's desktop editors (an injector stages the IDE
-into a shared volume; a `controller.devfile.io/container-contribution` runtime
-runs it, co-locating GUI + toolchain):
+The real Che container-contribution model (like che-code): the editor CONTRIBUTES
+the IDE + streaming onto the workspace's TOOLCHAIN container — it does not ship its
+own. The user owns the toolchain; the editor is thin and swappable.
 
-- **`sdk`** (`container/sdk/Containerfile`) — standalone, HEADLESS: Ubuntu +
-  Android SDK (configurable API levels, no emulator) + JDK + JCEF JBR. Reused as
-  the base for the dev images AND usable directly for headless Android CI.
-- **Desktop layer** (`container/desktop/setup-desktop.sh`) — shared TOP layer:
-  GUI libs + openbox + KasmVNC + snakeoil cert + subpath fix + arbitrary-UID
-  passwd fix. Applied on top of the SDK in both dev images.
-- **Dev images** (contribution runtimes): `asfp-dev` and `studio-dev`. Both
-  `FROM sdk` + desktop layer; they differ only by the IDE-flavor env. (A heavier
-  variant carrying a full AOSP build toolchain could layer on top of `sdk` — not
-  built here.)
+- **`sdk`** (`container/sdk/Containerfile`) — the GUI-capable, flavor-NEUTRAL
+  **toolchain base**: Ubuntu + Android SDK (configurable API levels, no emulator)
+  + JDK + JCEF JBR + the GUI/streaming RUNTIME LIBS (X libs, mesa/DRI, fonts,
+  openbox, dbus, perl + the KasmVNC .deb's Perl-module deps) + `/tmp/.X11-unix`
+  1777 + arbitrary-UID passwd fix. It plays THREE roles: (1) the workspace dev
+  container the contribution merges into; (2) the contribution's placeholder image
+  (so a workspace with no dev container runs the desktop standalone); (3) the base
+  users EXTEND (`FROM …/sdk`) to add their own SDK levels + tools. Also usable
+  directly, headless, for Android CI.
 - **Injector images** (`container/editor/Containerfile`, param by `IDE_FLAVOR`):
-  `asfp-editor` and `studio-editor` — each carries ONLY the relocatable IDE
-  `/opt` tree + entrypoint/skel/config, staged into the shared volume at start.
+  `asfp-editor` and `studio-editor` — carry the PORTABLE payload staged into the
+  shared volume at start: the relocatable IDE `/opt` tree, the **relocated KasmVNC**
+  (unpacked from its `.deb` — there is no portable tarball; see below), the
+  throwaway cert, openbox config, entrypoint + skel.
 
-Layer order for a dev image: **sdk → desktop on top.** Images publish to
-`ghcr.io/<owner>/che-android-studio/<image>`.
+Why no `*-dev` images anymore: KasmVNC + the IDE are now PORTABLE (staged on the
+volume), so there is nothing flavor-specific left to bake into a runtime image —
+the contribution merges onto whatever toolchain container the workspace has. The
+NON-relocatable pieces (GUI/streaming runtime libs) live in `sdk`.
+
+**The portable/apt split (load-bearing):** anything resolved by
+`ld.so`/fontconfig/xkb path lookup or exec'd by bare name → `sdk` image (apt).
+Anything self-contained + prefix-relocatable → shared volume (from the injector).
+Keep the `sdk` GUI/streaming apt set in sync with the KasmVNC `.deb`'s `Depends:`
+(pinned by `KASMVNC_VERSION` in `container/editor/Containerfile`).
+
+Images publish to `ghcr.io/<owner>/che-android-studio/<image>`.
 
 Two editor definitions → two dashboard entries: `che-android-studio/asfp/latest`
 and `che-android-studio/android-studio/latest`
 (`deploy/asfp-editor-definition.yaml`, `deploy/studio-editor-definition.yaml`).
+
+**BYO toolchain contract:** because the contribution merge keeps the USER's dev
+container image (the editor's is a placeholder), a user-supplied dev container must
+be GUI-capable — build it `FROM ghcr.io/<owner>/che-android-studio/sdk` (or replicate
+its GUI/streaming apt set + the SDK/JBR at their `/opt` paths). A non-GUI dev
+container will start but the desktop won't render.
 
 ## Configurable Android API levels
 
@@ -104,10 +121,22 @@ READABLE and `exit 1`s otherwise — even with `require_ssl: false` (the
 can't satisfy this for an arbitrary UID: `/etc/ssl/private` is `0710
 root:ssl-cert`, so the restricted-SCC UID can't even TRAVERSE into the dir to
 stat the key → "cert file doesn't exist or isn't a file" → crash. (Inspecting the
-image as root hides this — root ignores dir perms.) Fix: the desktop layer
-generates a throwaway self-signed pair under `/etc/che-android-studio/pki` (a
-`0755` dir, files `0644`), and the entrypoint's `~/.vnc/kasmvnc.yaml` points at
-it. The cert is never used for TLS (wire is HTTP) — it only passes the gate.
+image as root hides this — root ignores dir perms.) Fix: the `*-editor` image
+generates a throwaway self-signed pair under `/opt/che-android-studio/pki`, the
+injector stages it into the shared volume (`/che-android-studio/pki`), and the
+entrypoint's `~/.vnc/kasmvnc.yaml` points at it. Shipping the cert on the VOLUME
+(not the base image) keeps the gate independent of the user's toolchain container.
+The cert is never used for TLS (wire is HTTP) — it only passes the gate.
+
+Also SEPARATELY (relocated-KasmVNC quirk): the `kasmvncserver` Perl launcher reads
+a hardcoded defaults + system config (`/usr/share/kasmvnc/kasmvnc_defaults.yaml`,
+`/etc/kasmvnc/kasmvnc.yaml`) and `die`s if either is unreadable — and in the
+relocated/merged toolchain container NEITHER exists. `-config a,b` REPLACES that
+list, so the entrypoint passes the STAGED defaults + our `~/.vnc/kasmvnc.yaml`
+(last wins). The user yaml also sets `server.http.httpd_directory` to the staged
+`www` (the default points at the non-existent `/usr/share/kasmvnc/www`), and the
+entrypoint sets `PATH`/`PERL5LIB` to the staged prefix so the launcher finds
+`Xkasmvnc` (relative to `$0`) and its `KasmVNC::*` modules.
 
 ### KasmVNC websocket must use the Che sub-path (the `/websockify` 418)
 
@@ -133,8 +162,8 @@ Under OpenShift's restricted SCC the workspace runs as an arbitrary UID in group
 0 with NO `/etc/passwd`/`/etc/group` entry, so a terminal shows `groups: cannot
 find name for group ID 1000` and `getpwuid()`-based tools misbehave. The fix is
 the OpenShift-standard pattern: `/etc/passwd` is made group-writable (mode 0664)
-at build time (`setup-desktop.sh` runs `chmod g=u /etc/passwd /etc/group`), and
-`entrypoint.sh`'s `ensure_passwd_entry` appends
+at build time (`container/sdk/Containerfile` runs `chmod g=u /etc/passwd
+/etc/group`), and `entrypoint.sh`'s `ensure_passwd_entry` appends
 `developer:x:<uid>:<gid>:...:<HOME>:/bin/bash` at runtime if `getent passwd
 <uid>` is empty.
 
@@ -199,9 +228,11 @@ baked into the image under that path. So:
   injected via the `TODO(custom-android-sdk)` hook + the `CUSTOM_ANDROID_SDK_DIR`
   runtime drop-in.
 - **Per-user first-run STATE is seeded into the PVC at runtime** by the
-  entrypoint's `seed_first_run_state()` — `cp` from image-resident templates in
-  `/opt/che-android-studio/skel/` into `$HOME`, ONLY if the target is absent
-  (never clobber a user's later choices). Seeded: data-collection consent (opted
+  entrypoint's `seed_first_run_state()` — `cp` from templates the injector staged
+  into the shared volume at `/che-android-studio/skel/` (the entrypoint resolves
+  `SKEL_DIR` under `ASSET_BASE`, falling back to the in-image
+  `/opt/che-android-studio/skel/` for a local/monolith run) into `$HOME`, ONLY if
+  the target is absent (never clobber a user's later choices). Seeded: consent (opted
   OUT), analytics opt-out, skip-wizard, SDK path (→ `/opt/android-sdk`, absolute),
   and IDE custom window decorations. `jdk.table.xml` is GENERATED (not seeded) per
   installed API level. The config dir name embeds the IDE version; the entrypoint
@@ -238,8 +269,10 @@ UDP/WebRTC and would need its own Service+Ingress + TURN/STUN — see STREAMING.
    NVIDIA device plugin.
 2. **Android emulator** — per-pod `/dev/kvm` via a KVM device plugin + a
    permissive SCC.
-3. **Heavy platform-build dev image** — a variant `FROM sdk` carrying a full AOSP
-   build toolchain (build-essential, `repo`, JDKs). Kept out of the lean default.
+3. **Heavy platform-build toolchain** — this is now just the BYO-toolchain path:
+   a user builds `FROM sdk` adding a full AOSP build toolchain (build-essential,
+   `repo`, JDKs) and points their workspace's dev container at it; the editor
+   contributes the IDE + streaming onto it. Kept out of the lean default.
 4. **Pre-warmed IDE cache template PVC** — clone-on-create so first launch is
    instant (indexes already built). Needs a CSI that supports volume cloning.
 5. **Restore `.deb` checksum gates** — KasmVNC + ASfP `.deb` downloads currently

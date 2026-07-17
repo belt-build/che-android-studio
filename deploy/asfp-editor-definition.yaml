@@ -33,8 +33,13 @@ events:
   postStart:
   - start-asfp
 components:
+# Shared volume: the injector stages the IDE + relocated KasmVNC + assets here at
+# preStart; the runtime consumes them at postStart.
 - name: che-android-studio
   volume: {}
+# Injector: from the thin asfp-editor image. Copies the relocatable IDE tree and
+# everything under /opt/che-android-studio (KasmVNC, cert, openbox, skel,
+# entrypoint) into the shared volume, then exits.
 - name: asfp-injector
   container:
     image: ghcr.io/kirkbrauer/che-android-studio/asfp-editor:latest
@@ -49,9 +54,22 @@ components:
     memoryRequest: 32Mi
     cpuLimit: 500m
     cpuRequest: 30m
+# Runtime: a container CONTRIBUTION. At workspace start the DevWorkspace controller
+# MERGES this component's endpoint/env/volumeMount into the workspace's dev
+# (toolchain) container — the user's image wins, so it must be GUI-capable (build
+# FROM the published `sdk` base). If the workspace has no dev container, this runs
+# standalone on the `sdk` placeholder image below. Either way the toolchain owns
+# the SDK; the editor only contributes the IDE + streaming.
 - name: asfp-runtime
+  attributes:
+    controller.devfile.io/container-contribution: true
+    app.kubernetes.io/component: asfp-runtime
+    app.kubernetes.io/part-of: che-android-studio.eclipse.org
   container:
-    image: ghcr.io/kirkbrauer/che-android-studio/asfp-dev:latest
+    image: ghcr.io/kirkbrauer/che-android-studio/sdk:latest
+    env:
+    - name: IDE_FLAVOR
+      value: asfp
     volumeMounts:
     - name: che-android-studio
       path: /che-android-studio

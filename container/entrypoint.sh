@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # che-android-studio desktop-session entrypoint.
 #
-# Runs in the DEV/runtime container (asfp-dev or studio-dev) after the editor
-# definition's container-contribution merges the injected IDE in. The IDE
-# payload + these assets were staged into the shared volume (/che-android-studio)
-# by the injector image; the dev image provides KasmVNC, openbox, the GUI libs,
-# the Android SDK, and the JCEF JBR.
+# Runs in the TOOLCHAIN container (the `sdk` base, or the user's own dev container)
+# once the editor definition's controller.devfile.io/container-contribution has
+# merged the IDE + streaming config in. EVERYTHING app-specific was staged into the
+# shared volume (/che-android-studio) by the *-editor injector: the IDE payload,
+# the RELOCATED KasmVNC server (Xkasmvnc + the kasmvncserver Perl launcher + its
+# www + KasmVNC::* Perl modules), openbox config, and a throwaway cert. The
+# toolchain container only supplies the non-relocatable RUNTIME LIBS these link
+# against (X/GTK/mesa/fonts/perl-modules), plus the Android SDK + JCEF JBR.
 #
 # IMPORTANT: KasmVNC owns the X server. `kasmvncserver` STARTS its own X server
 # (Xkasmvnc) — do NOT run Xvfb (it would abort with "A VNC server is already
 # running"). The WM + IDE come up under ~/.vnc/xstartup, which KasmVNC runs.
 #
-# Order: resolve assets → passwd entry for the arbitrary UID → writable HOME/XDG
-# → seed first-run state → dbus → xstartup (openbox + IDE restart loop) →
-# kasmvnc write-user + config → exec kasmvncserver (PID-1 of the session).
+# Order: resolve assets (IDE + staged KasmVNC) → passwd entry for the arbitrary
+# UID → writable HOME/XDG → seed first-run state → openbox config → dbus →
+# xstartup (openbox + IDE restart loop) → kasmvnc write-user + config → exec the
+# staged kasmvncserver (PID-1 of the session).
 
 set -euo pipefail
 
@@ -22,13 +26,36 @@ log() { printf '[%s] [entrypoint] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
 DISPLAY_NUM=":1"
 
 # --- Asset resolution (shared volume injected by the editor, else image) ----
-# The injector copies skel/vmoptions/openbox-rc into the shared volume root.
-# Prefer that; fall back to the image-resident /opt/che-android-studio for a
+# The injector copies skel/vmoptions/openbox-rc/kasmvnc/pki into the shared volume
+# root. Prefer that; fall back to the image-resident /opt/che-android-studio for a
 # non-split (monolith-style) run or local testing.
 ASSET_BASE="/che-android-studio"
 [ -d "${ASSET_BASE}/skel" ] || ASSET_BASE="/opt/che-android-studio"
 SKEL_DIR="${ASSET_BASE}/skel"
 STUDIO_VM_OPTIONS="${ASSET_BASE}/studio.vmoptions"
+OPENBOX_RC="${ASSET_BASE}/openbox-rc.xml"
+OPENBOX_THEME="${ASSET_BASE}/openbox-dark-themerc"
+CERT_DIR="${ASSET_BASE}/pki"
+
+# --- Staged KasmVNC resolution ----------------------------------------------
+# KasmVNC has no portable tarball, so the *-editor image unpacked its .deb into
+# ${ASSET_BASE}/kasmvnc (layout: usr/bin, usr/share/kasmvnc, usr/share/perl5,
+# usr/lib/kasmvncserver). The Perl launcher finds Xkasmvnc/kasmvncpasswd relative
+# to $0, so putting usr/bin on PATH is enough for the binaries; PERL5LIB points at
+# the staged KasmVNC::* modules. If the staged tree is absent (a legacy all-in-one
+# image with KasmVNC apt-installed), fall back to whatever is on PATH.
+KASM_PREFIX="${ASSET_BASE}/kasmvnc"
+if [ -x "${KASM_PREFIX}/usr/bin/kasmvncserver" ]; then
+    export PATH="${KASM_PREFIX}/usr/bin:${PATH}"
+    export PERL5LIB="${KASM_PREFIX}/usr/share/perl5${PERL5LIB:+:${PERL5LIB}}"
+    KASM_WWW="${KASM_PREFIX}/usr/share/kasmvnc/www"
+    KASM_DEFAULTS="${KASM_PREFIX}/usr/share/kasmvnc/kasmvnc_defaults.yaml"
+    log "using staged KasmVNC at ${KASM_PREFIX}"
+else
+    KASM_WWW="/usr/share/kasmvnc/www"
+    KASM_DEFAULTS="/usr/share/kasmvnc/kasmvnc_defaults.yaml"
+    log "WARN: no staged KasmVNC under ${KASM_PREFIX}; falling back to PATH kasmvncserver"
+fi
 
 # --- IDE flavor -------------------------------------------------------------
 # IDE_FLAVOR is set by the dev/injector image (asfp|studio). It selects the
@@ -140,6 +167,11 @@ export XDG_DATA_HOME="${HOME}/.local/share"
 mkdir -p "${XDG_CONFIG_HOME}" "${XDG_CACHE_HOME}" "${XDG_DATA_HOME}" "${HOME}/.vnc" 2>/dev/null || true
 
 ensure_passwd_entry "${HOME}"
+
+# Xkasmvnc creates its socket under /tmp/.X11-unix. The `sdk` base pre-creates it,
+# but a BYO toolchain container might not — ensure it (1777) so the X server (which
+# logs "euid != 0, directory will not be created" and fails otherwise) can bind.
+mkdir -p /tmp/.X11-unix 2>/dev/null && chmod 1777 /tmp/.X11-unix 2>/dev/null || true
 
 # Export SDK so the IDE (launched from xstartup) inherits it.
 export ANDROID_SDK_ROOT ANDROID_HOME="${ANDROID_SDK_ROOT}"
@@ -288,6 +320,27 @@ clear_stale_locks() {
 }
 clear_stale_locks
 
+# --- Openbox config ---------------------------------------------------------
+# openbox reads its config from $XDG_CONFIG_HOME/openbox/rc.xml (and themes from
+# $XDG_DATA_HOME/themes). The rc.xml maximizes the IDE window + strips WM
+# decorations (single-app kiosk; the IDE draws its own header). These used to be
+# baked into the dev image's /etc/xdg + /usr/share/themes; now they ride in the
+# shared volume, so place them into the runtime user's XDG dirs at start.
+place_openbox_config() {
+    if [ -r "${OPENBOX_RC}" ]; then
+        mkdir -p "${XDG_CONFIG_HOME}/openbox" 2>/dev/null || true
+        cp -f "${OPENBOX_RC}" "${XDG_CONFIG_HOME}/openbox/rc.xml" 2>/dev/null \
+            && log "placed openbox rc.xml" || log "WARN: could not place openbox rc.xml"
+    else
+        log "WARN: openbox rc.xml not found at ${OPENBOX_RC}"
+    fi
+    if [ -r "${OPENBOX_THEME}" ]; then
+        mkdir -p "${XDG_DATA_HOME}/themes/StudioDark/openbox-3" 2>/dev/null || true
+        cp -f "${OPENBOX_THEME}" "${XDG_DATA_HOME}/themes/StudioDark/openbox-3/themerc" 2>/dev/null || true
+    fi
+}
+place_openbox_config
+
 # --- D-Bus ------------------------------------------------------------------
 mkdir -p /tmp/dbus
 DBUS_ADDR_FILE=/tmp/dbus/session-addr
@@ -347,22 +400,38 @@ fi
 # --- KasmVNC config: serve plain HTTP on loopback ---------------------------
 # Che's gateway connects over http://127.0.0.1:6901 (TLS/auth at the edge), so
 # KasmVNC must NOT require SSL. The unconditional cert-readability gate is
-# satisfied by the world-readable throwaway pair under /etc/che-android-studio/pki.
+# satisfied by the world-readable throwaway pair staged in the shared volume
+# (${CERT_DIR}). server.http.httpd_directory points the server at the RELOCATED
+# noVNC www (with the sub-path fix baked in) — the yaml default is the .deb's
+# /usr/share/kasmvnc/www, which doesn't exist in this relocated layout.
 cat > "${HOME}/.vnc/kasmvnc.yaml" <<KASMYAML
 network:
   protocol: http
   ssl:
     require_ssl: false
-    pem_certificate: /etc/che-android-studio/pki/snakeoil.pem
-    pem_key: /etc/che-android-studio/pki/snakeoil.key
+    pem_certificate: ${CERT_DIR}/snakeoil.pem
+    pem_key: ${CERT_DIR}/snakeoil.key
+server:
+  http:
+    httpd_directory: ${KASM_WWW}
 KASMYAML
-log "wrote ${HOME}/.vnc/kasmvnc.yaml (require_ssl: false)"
+log "wrote ${HOME}/.vnc/kasmvnc.yaml (require_ssl: false, www=${KASM_WWW})"
+
+# The launcher reads a hardcoded defaults + system config
+# (/usr/share/kasmvnc/kasmvnc_defaults.yaml, /etc/kasmvnc/kasmvnc.yaml) and
+# `die`s if either is unreadable — neither exists in the relocated/merged
+# toolchain container. `-config a,b` REPLACES that list, so pass the STAGED
+# defaults plus our user config (last wins). Only include defaults if present.
+KASM_CONFIG="${HOME}/.vnc/kasmvnc.yaml"
+[ -r "${KASM_DEFAULTS}" ] && KASM_CONFIG="${KASM_DEFAULTS},${KASM_CONFIG}"
+log "KasmVNC -config = ${KASM_CONFIG}"
 
 # --- KasmVNC ----------------------------------------------------------------
 # -DisableBasicAuth 1 is REQUIRED: -SecurityTypes None only covers the RFB layer;
 # the websocket server otherwise 401s every request (incl. /healthz) → Che never
 # goes healthy. kasmvncserver forwards unknown -Foo args to Xkasmvnc.
 exec kasmvncserver "${DISPLAY_NUM}" \
+    -config "${KASM_CONFIG}" \
     -interface 127.0.0.1 \
     -websocketPort 6901 \
     -SecurityTypes None \

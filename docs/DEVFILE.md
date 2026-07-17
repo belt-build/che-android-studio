@@ -45,20 +45,41 @@ Each `deploy/*-editor-definition.yaml` is a devfile (schema 2.2.2) with:
 - `components`:
   - a shared `volume: {}` (`che-android-studio`, mounted at
     `/che-android-studio`),
-  - an **injector** container (the `*-editor` image) that stages the IDE tree
-    into the shared volume at `preStart`,
-  - a **runtime** container (the `*-dev` image,
-    `controller.devfile.io/container-contribution: true`) carrying the
-    KasmVNC/HTTPS endpoint on port 6901.
+  - an **injector** container (the `*-editor` image) that stages the IDE tree +
+    the relocated KasmVNC + assets into the shared volume at `preStart`,
+  - a **runtime** container marked
+    `controller.devfile.io/container-contribution: true` (image: the `sdk` base as
+    a placeholder) carrying the HTTPS endpoint on port 6901 + the `IDE_FLAVOR` env.
+    The DevWorkspace controller MERGES this into the workspace's dev container (see
+    the BYO contract below); with no dev container it runs standalone on `sdk`.
 - `commands` + `events` wire the injector to `preStart` and the entrypoint to
   `postStart`.
 
+## Bring your own toolchain container
+
+Because the container-contribution merge keeps the USER's dev container image (the
+editor's `sdk` image is only a placeholder), a workspace that supplies its own
+dev/tools container must make it **GUI-capable**, or the desktop won't render.
+Build it `FROM ghcr.io/kirkbrauer/che-android-studio/sdk` and add whatever tools
+you need:
+
+```Dockerfile
+FROM ghcr.io/kirkbrauer/che-android-studio/sdk:latest
+RUN sudo apt-get update && sudo apt-get install -y ripgrep …   # your tools
+```
+
+The `sdk` base carries the GUI/streaming runtime libs + the Android SDK + JCEF JBR
+at their expected `/opt` paths. If you cannot base on `sdk`, replicate its
+GUI/streaming apt set (see `container/sdk/Containerfile`) and provide the SDK/JBR.
+If your workspace declares no dev container at all, nothing extra is needed — the
+contribution runs standalone on `sdk`.
+
 ## Endpoint behavior
 
-The runtime's single desktop endpoint:
+The runtime's single desktop endpoint (`asfp-desktop` / `studio-desktop`):
 
 ```yaml
-- name: asfp-desktop
+- name: asfp-desktop      # studio-desktop in the Android Studio definition
   targetPort: 6901
   exposure: public
   protocol: https

@@ -14,24 +14,35 @@ file (rather than a Containerfile heredoc) because buildah's Dockerfile parser
 rejects heredocs inside RUN instructions ("unterminated heredoc").
 
 Idempotent: skips a file that already contains the fix marker.
+
+Usage:
+    inject-subpath-fix.py [<www-dir> [<fix-html-path>]]
+
+<www-dir> is the noVNC web root containing index.html + vnc.html; it defaults to
+the KasmVNC .deb's install location. In the container-contribution model the
+KasmVNC payload is extracted to a RELOCATABLE prefix in the *-editor image, so
+the build passes the staged www dir explicitly (e.g.
+/opt/che-android-studio/kasmvnc/usr/share/kasmvnc/www).
 """
 
+import os
 import sys
 
-FIX_PATH = "/usr/share/che-android-studio/kasmvnc-subpath-fix.html"
-TARGETS = [
-    "/usr/share/kasmvnc/www/index.html",
-    "/usr/share/kasmvnc/www/vnc.html",
-]
+DEFAULT_WWW_DIR = "/usr/share/kasmvnc/www"
+DEFAULT_FIX_PATH = "/usr/share/che-android-studio/kasmvnc-subpath-fix.html"
 MARKER = '<script type="module"'
 SENTINEL = "che-android-studio: sub-path websocket fix"
 
 
 def main() -> int:
-    with open(FIX_PATH, encoding="utf-8") as fh:
+    www_dir = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_WWW_DIR
+    fix_path = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_FIX_PATH
+    targets = [os.path.join(www_dir, "index.html"), os.path.join(www_dir, "vnc.html")]
+
+    with open(fix_path, encoding="utf-8") as fh:
         fix = fh.read()
 
-    for path in TARGETS:
+    for path in targets:
         with open(path, encoding="utf-8") as fh:
             html = fh.read()
 

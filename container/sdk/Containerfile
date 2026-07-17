@@ -1,15 +1,24 @@
-# che-android-studio-sdk — standalone, headless Android SDK image.
+# che-android-studio-sdk — the GUI-capable, user-EXTENSIBLE Android toolchain base.
 #
-# A lean, desktop-free image carrying the Android SDK (one or more API levels, NO
-# emulator), a JDK for the SDK tools, and the JCEF-enabled JetBrains Runtime that
-# the IDE flavors boot on (ASfP's Cuttlefish view needs JCEF).
+# Carries the Android SDK (one or more API levels, NO emulator), a JDK for the SDK
+# tools, the JCEF-enabled JetBrains Runtime the IDE flavors boot on (ASfP's
+# Cuttlefish view needs JCEF), AND the GUI + streaming RUNTIME libraries the
+# streamed desktop needs (X libs, mesa/DRI, fonts, openbox, dbus, and everything
+# the relocated KasmVNC server dynamically links / execs — see the KasmVNC block).
 #
-# Why standalone: this image is reused two ways —
-#   1. as the base for the desktop dev images (asfp-dev, studio-dev), so
-#      sdkmanager runs ONCE here, not per dev image;
-#   2. directly, headless, for regular Android app CI builds (gradle) that need
-#      the SDK but no desktop.
-# It can be rebuilt on its own cadence when the underlying SDKs change.
+# This image is the TOOLCHAIN layer in the container-contribution model:
+#   1. It is the workspace's dev/tools container — the editor definition's
+#      `controller.devfile.io/container-contribution` MERGES the IDE + streaming
+#      config into it at runtime. The IDE + KasmVNC binaries themselves arrive on a
+#      shared volume (staged by the *-editor injector), so they are NOT baked here;
+#      only the non-relocatable RUNTIME LIBS they link against live here.
+#   2. It is the contribution's placeholder image, so a workspace with no dev
+#      container of its own still runs the desktop standalone on this image.
+#   3. Users EXTEND it (`FROM …/sdk`) to add their own SDK levels + "other assorted
+#      tools" — the toolchain is theirs to own, the editor just streams onto it.
+#   4. It is usable directly, headless, for regular Android app CI builds (gradle).
+#
+# It is flavor-NEUTRAL: no IDE_FLAVOR / version env lives here (that is editor-only).
 #
 # Build: podman build -t che-android-studio-sdk:latest -f container/sdk/Containerfile container/
 
@@ -19,7 +28,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 # JDK for sdkmanager + headless gradle builds; unzip for cmdline-tools; curl +
 # CAs for the downloads. sudo so the workspace user can install packages at
-# runtime (studio-dev inherits this base; asfp-dev also builds on it).
+# runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openjdk-17-jdk-headless \
         ca-certificates curl unzip \
@@ -30,6 +39,50 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # %sudo isn't enough (the UID has no group membership), so allow ALL — fine for
 # a single-user dev container.
 RUN echo 'ALL ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+
+# --- GUI + streaming RUNTIME libraries --------------------------------------
+# These CANNOT be shipped on the shared volume: they are resolved by ld.so /
+# fontconfig / xkb path lookup or exec'd by bare name, so they must exist in
+# whatever container the desktop runs in. Two groups:
+#
+#   (a) What ASfP/IntelliJ + openbox render against (GTK/X/mesa/fonts). NO Xvfb —
+#       KasmVNC ships its own X server (Xkasmvnc).
+#   (b) The RELOCATED KasmVNC server's runtime deps. KasmVNC has no portable
+#       tarball, so the *-editor image extracts its .deb payload onto the volume;
+#       but Xkasmvnc + the kasmvncserver Perl launcher still dynamically link /
+#       `use` these. This set is the KasmVNC .deb's own `Depends:` (libs, the
+#       xkb/xauth/font tooling, and the launcher's Perl modules). Keep it in sync
+#       with KASMVNC_VERSION in container/editor/Containerfile.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openbox \
+        dbus-x11 \
+        x11-xserver-utils x11-utils x11-xkb-utils \
+        xkb-data xauth \
+        libgl1 libgl1-mesa-dri libgbm1 \
+        libxtst6 libxrender1 libxi6 libxss1 libxcomposite1 \
+        libxrandr2 libxdamage1 libxfixes3 libxkbfile1 \
+        libxcursor1 libxfont2 libxshmfence1 libpixman-1-0 \
+        libgtk-3-0 libnss3 libcups2 libasound2 libpango-1.0-0 \
+        libfreetype6 libpng16-16 libunwind8 libbsd0 \
+        fonts-dejavu-core fonts-noto-cjk fonts-noto-color-emoji \
+        desktop-file-utils procps \
+        perl libswitch-perl libyaml-tiny-perl libhash-merge-simple-perl \
+        liblist-moreutils-perl libtry-tiny-perl \
+        libdatetime-perl libdatetime-timezone-perl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- X11 socket dir ---------------------------------------------------------
+# Xkasmvnc creates its socket under /tmp/.X11-unix. Under the restricted SCC the
+# arbitrary UID can't mkdir it at runtime — pre-create it sticky/world-writable.
+# (The entrypoint also does this, belt-and-suspenders, for BYO dev containers.)
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+
+# --- Arbitrary-UID passwd/group fix -----------------------------------------
+# Under OpenShift's restricted SCC the container runs as an arbitrary UID in
+# group 0 with no /etc/passwd entry → `groups: cannot find name for group ID
+# 1000` in the terminal. Make the DBs group-writable so the entrypoint can
+# append an entry at runtime as the (group-0) arbitrary UID.
+RUN chmod g=u /etc/passwd /etc/group
 
 # --- JCEF-enabled JetBrains Runtime -----------------------------------------
 # The bundled ASfP JBR has NO JCEF; the Cuttlefish view (a JCEF webview) needs
@@ -88,5 +141,8 @@ RUN set -eux; \
 # runtime drop-in hook (CUSTOM_ANDROID_SDK_DIR) also exists in the entrypoint.
 # The stock android-<L> platforms above are the baseline.
 
-# Put the SDK tools on PATH for headless app-build use of this image.
+# Put the SDK tools on PATH for headless app-build use of this image, and for the
+# streamed IDE (which inherits this env) to find adb/sdkmanager.
 ENV PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
+
+WORKDIR /home/user

@@ -21,33 +21,40 @@ browser ─▶ Che gateway (HTTPS/WS) ─▶ workspace pod ─▶ KasmVNC (own X
 ```
 
 The Android SDK (API 34 + 36 by default, configurable) and a JCEF-enabled
-JetBrains Runtime are pre-baked into the image, and the first-run wizard /
-analytics prompts are pre-answered — so the IDE opens straight into a usable
+JetBrains Runtime are pre-baked into the toolchain image, and the first-run wizard
+/ analytics prompts are pre-answered — so the IDE opens straight into a usable
 state.
 
-## Image architecture (five images, injector + container-contribution)
+## Image architecture (four images: 1 toolchain base + 2 injectors)
 
-Modeled on Che's desktop editors: an **injector** stages the relocatable IDE
-into a shared volume, and a `controller.devfile.io/container-contribution`
-**runtime** runs it — so the GUI + toolchain are co-located.
+The real Che **container-contribution** model (like che-code): the editor
+CONTRIBUTES the IDE + streaming onto the workspace's **toolchain** container rather
+than shipping its own runtime. The user owns the toolchain; the editor stays thin
+and swappable. An **injector** stages the relocatable IDE **and a relocated KasmVNC**
+into a shared volume; the contribution then runs them in the toolchain container.
 
 | Image | Role |
 |---|---|
-| `sdk` | Headless base: Ubuntu + Android SDK (configurable API levels, no emulator) + JDK + JCEF JBR. Reusable directly for headless Android CI builds. |
-| `asfp-dev` / `studio-dev` | The contribution runtimes (`FROM sdk` + the desktop layer: KasmVNC + openbox + GUI libs). The GUI is contributed into these; the user's terminal lives here. |
-| `asfp-editor` / `studio-editor` | The IDE injectors (`FROM ubuntu`, carry only the relocatable IDE `/opt` tree + entrypoint/seed assets), staged into the shared volume at workspace start. |
+| `sdk` | The GUI-capable, flavor-neutral **toolchain base**: Ubuntu + Android SDK (configurable API levels, no emulator) + JDK + JCEF JBR + the GUI/streaming runtime libs. It is the workspace dev container, the contribution's placeholder image, the base users **extend** (`FROM …/sdk`) to add their own tools, and usable directly for headless Android CI. |
+| `asfp-editor` / `studio-editor` | The IDE + streaming injectors (`FROM ubuntu`): carry the relocatable IDE `/opt` tree, the relocated KasmVNC (unpacked from its `.deb`), a throwaway cert, openbox config + entrypoint/seed assets — staged into the shared volume at workspace start. |
 
-Published to `ghcr.io/kirkbrauer/che-android-studio/<image>`.
+Non-relocatable pieces (X/GTK/mesa/fonts + KasmVNC's runtime libs) live in `sdk`;
+everything self-contained (IDE, KasmVNC binaries, www, cert, assets) ships on the
+volume. Published to `ghcr.io/kirkbrauer/che-android-studio/<image>`.
+
+**Bring your own toolchain:** because the contribution keeps the user's dev
+container image, a custom tools container must be GUI-capable — build it
+`FROM ghcr.io/kirkbrauer/che-android-studio/sdk` and add whatever tools you need.
 
 ## Quick start
 
 ### 1. (Optional) build the images yourself
 
-CI builds and publishes all five to GHCR on every push to `main`. To build
+CI builds and publishes all four to GHCR on every push to `main`. To build
 locally:
 
 ```bash
-make images                                   # sdk → dev → editor, in order
+make images                                   # sdk + editor images
 make sdk-image ANDROID_API_LEVELS="33 34 35 36"   # custom API levels
 ```
 
@@ -81,7 +88,7 @@ opens with the IDE running.
 
 ```
 che-android-studio/
-├── container/               Containerfiles + entrypoint.sh + desktop/seed assets
+├── container/               Containerfiles (sdk, editor) + entrypoint.sh + seed assets
 ├── deploy/                  Editor definitions + getting-started samples (+ kustomization)
 ├── examples/                Example workspace devfile + optional Argo CD wiring
 ├── hack/                    register-editors.sh
@@ -104,8 +111,9 @@ che-android-studio/
 - **WebRTC streaming** (Selkies) for GPU-accelerated H.264 + audio — needs its
   own Service/Ingress + TURN/STUN; see `docs/STREAMING.md`.
 - **Android emulator** — needs `/dev/kvm` via a device plugin + a permissive SCC.
-- **Heavy platform-build variant** — a dev image carrying a full AOSP build
-  toolchain, layered on top of `sdk`.
+- **Heavy platform-build toolchain** — now just the bring-your-own path: extend
+  `sdk` with a full AOSP build toolchain and point your workspace's dev container
+  at it.
 
 ## License
 

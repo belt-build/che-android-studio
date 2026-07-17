@@ -1,6 +1,6 @@
 name: ci
 
-# Test → build → smoke. On main: build + push all five images to GHCR. On PRs:
+# Test → build → smoke. On main: build + push all four images to GHCR. On PRs:
 # validate + build only (no push, so forks need no registry creds).
 on:
   push:
@@ -43,7 +43,6 @@ jobs:
           # `A && log ok || log warn` logging idiom is intentional — SC2015 info).
           shellcheck -S warning \
                      container/entrypoint.sh \
-                     container/desktop/setup-desktop.sh \
                      hack/register-editors.sh
 
       - name: hadolint (Containerfiles)
@@ -53,8 +52,6 @@ jobs:
           #   DL4006 — pipes inside RUN are guarded by `set -e`/explicit checks
           #   SC2086 — the SDK build word-splits ${pkgs}/${lists} on purpose
           for f in container/sdk/Containerfile \
-                   container/dev/asfp/Containerfile \
-                   container/dev/studio/Containerfile \
                    container/editor/Containerfile; do
             echo "hadolint $f"
             docker run --rm -i hadolint/hadolint hadolint \
@@ -106,8 +103,9 @@ jobs:
           fi
           echo "sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
-      # sdk first — the dev images build FROM it. We load it into the local
-      # docker so the dev builds resolve FROM even when push=false (PRs).
+      # sdk = the GUI-capable toolchain base + contribution placeholder. Loaded
+      # into the local docker so the desktop smoke can stage onto it even on PRs
+      # (push=false).
       - name: Build sdk
         uses: docker/build-push-action@v6
         with:
@@ -120,36 +118,6 @@ jobs:
           push: ${{ steps.meta.outputs.push }}
           cache-from: type=gha,scope=sdk
           cache-to: type=gha,scope=sdk,mode=max
-
-      - name: Build asfp-dev
-        uses: docker/build-push-action@v6
-        with:
-          context: container
-          file: container/dev/asfp/Containerfile
-          build-args: |
-            IMAGE_PREFIX=${{ env.IMAGE_PREFIX }}
-            SDK_TAG=latest
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/asfp-dev:latest
-            ${{ env.IMAGE_PREFIX }}/asfp-dev:${{ steps.meta.outputs.sha }}
-          push: ${{ steps.meta.outputs.push }}
-          cache-from: type=gha,scope=asfp-dev
-          cache-to: type=gha,scope=asfp-dev,mode=max
-
-      - name: Build studio-dev
-        uses: docker/build-push-action@v6
-        with:
-          context: container
-          file: container/dev/studio/Containerfile
-          build-args: |
-            IMAGE_PREFIX=${{ env.IMAGE_PREFIX }}
-            SDK_TAG=latest
-          tags: |
-            ${{ env.IMAGE_PREFIX }}/studio-dev:latest
-            ${{ env.IMAGE_PREFIX }}/studio-dev:${{ steps.meta.outputs.sha }}
-          push: ${{ steps.meta.outputs.push }}
-          cache-from: type=gha,scope=studio-dev
-          cache-to: type=gha,scope=studio-dev,mode=max
 
       - name: Build asfp-editor
         uses: docker/build-push-action@v6
@@ -204,17 +172,35 @@ jobs:
           fi
           echo "sdk smoke passed"
 
-      - name: Desktop smoke — KasmVNC serves plain HTTP 200 on 6901
+      - name: Desktop smoke — staged KasmVNC serves plain HTTP 200 on 6901
         run: |
-          img="${IMAGE_PREFIX}/asfp-dev:latest"
-          # Run the entrypoint; it starts KasmVNC on 6901. The IDE payload isn't
-          # staged (no editor injector here), so the IDE won't launch and the
-          # skel seeds are absent — but KasmVNC itself must still come up and
-          # answer HTTP 200 (proves -DisableBasicAuth + require_ssl:false survived
-          # the rename). KasmVNC binds -interface 127.0.0.1 (required for Che's
-          # in-pod loopback gateway), which a host-side `-p` mapping can't reach —
-          # so we curl from INSIDE the container's network namespace via exec.
-          docker run -d --name smoke "$img"
+          # Emulate the container-contribution split WITHOUT Che: the asfp-editor
+          # injector stages the IDE + relocated KasmVNC + assets into a shared
+          # volume, then the sdk (toolchain) base runs the staged entrypoint. This
+          # proves the RELOCATED KasmVNC comes up from the volume against only the
+          # base image's runtime libs (-DisableBasicAuth + require_ssl:false +
+          # -config + PERL5LIB). The IDE itself won't render headless, but KasmVNC
+          # must answer HTTP 200. It binds -interface 127.0.0.1 (Che's in-pod
+          # loopback), unreachable via host `-p`, so we curl from inside the netns.
+          editor="${IMAGE_PREFIX}/asfp-editor:latest"
+          base="${IMAGE_PREFIX}/sdk:latest"
+          docker volume create cas >/dev/null
+          echo "== stage editor payload into shared volume =="
+          docker run --rm -v cas:/che-android-studio "$editor" /bin/sh -c '
+            set -eux
+            src=$(readlink -f /opt/che-ide)
+            rm -rf /che-android-studio/ide; mkdir -p /che-android-studio/ide
+            cp -RL "$src/." /che-android-studio/ide/
+            cp -R /opt/che-android-studio/. /che-android-studio/'
+          echo "== staged tree sanity =="
+          docker run --rm -v cas:/che-android-studio "$base" sh -c '
+            set -eux
+            test -x /che-android-studio/kasmvnc/usr/bin/kasmvncserver
+            test -f /che-android-studio/kasmvnc/usr/share/kasmvnc/www/index.html
+            test -f /che-android-studio/pki/snakeoil.pem'
+          echo "== run toolchain base against staged entrypoint =="
+          docker run -d --name smoke -e IDE_FLAVOR=asfp -v cas:/che-android-studio \
+            "$base" sh -c '/che-android-studio/entrypoint.sh'
           ok=0
           for i in $(seq 1 90); do
             if docker exec smoke curl -sf -o /dev/null http://127.0.0.1:6901/; then
@@ -222,6 +208,7 @@ jobs:
             fi
             sleep 2
           done
-          echo "===== container logs ====="; docker logs smoke 2>&1 | tail -60 || true
+          echo "===== container logs ====="; docker logs smoke 2>&1 | tail -80 || true
           docker rm -f smoke >/dev/null 2>&1 || true
-          [ "$ok" = "1" ] || { echo "::error::KasmVNC did not serve on 6901"; exit 1; }
+          docker volume rm cas >/dev/null 2>&1 || true
+          [ "$ok" = "1" ] || { echo "::error::staged KasmVNC did not serve on 6901"; exit 1; }

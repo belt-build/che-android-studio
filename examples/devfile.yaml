@@ -30,10 +30,23 @@ components:
   - name: home
     volume:
       size: 50Gi
+  # OPTIONAL — bring your own toolchain container. The editor is a container
+  # CONTRIBUTION: it MERGES the IDE + streaming into the workspace's dev container
+  # (that image WINS the merge), or runs standalone on the published `sdk` base if
+  # you declare none. If you DO declare one, it must be GUI-capable — build it
+  # FROM the `sdk` base so the streamed desktop has its runtime libs + the SDK.
+  # Uncomment and point at your own image to add "other assorted tools":
+  #
+  #   - name: tools
+  #     container:
+  #       image: ghcr.io/YOUR_ORG/my-android-toolchain:latest  # FROM …/che-android-studio/sdk
+  #       memoryLimit: 32Gi
+  #       cpuLimit: '16'
+  #
   # OPTIONAL: to work against a large source tree (e.g. an AOSP checkout), add a
   # volume here and mount it in your project. For platform-scale trees you will
-  # want a ReadWriteMany storage class (or a pre-populated PVC); the editor's
-  # runtime container mounts whatever the workspace provides. Example:
+  # want a ReadWriteMany storage class (or a pre-populated PVC); the merged
+  # toolchain container mounts whatever the workspace provides. Example:
   #
   #   - name: source
   #     volume:

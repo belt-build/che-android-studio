@@ -22,13 +22,14 @@ KasmVNC.
                          ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │ DevWorkspace pod (per user)                                         │
-│  Runtime container (asfp-dev / studio-dev):                        │
-│   - KasmVNC server (own X server Xkasmvnc :1, loopback HTTP+WS 6901)│
-│   - openbox  (minimal stacking WM, via ~/.vnc/xstartup)            │
-│   - Android Studio / ASfP auto-launched, maximized                 │
-│   - Android SDK + JCEF JBR baked in the image (/opt/android-sdk)   │
-│  Injector container (asfp-editor / studio-editor):                 │
-│   - stages the relocatable IDE tree into the shared volume         │
+│  Injector init container (asfp-editor / studio-editor):            │
+│   - stages the relocatable IDE tree + relocated KasmVNC + assets    │
+│     into the shared volume, then exits                              │
+│  Toolchain container (the `sdk` base, or the user's own dev image): │
+│   - the editor's container-contribution MERGES its endpoint/env in  │
+│   - runs the STAGED entrypoint → staged KasmVNC (own X server        │
+│     Xkasmvnc :1, loopback HTTP+WS 6901) → openbox → IDE, maximized   │
+│   - provides the GUI/streaming RUNTIME LIBS + Android SDK + JCEF JBR │
 └────────────────────────┬───────────────────────────────────────────┘
                          │
                          ▼
@@ -40,19 +41,33 @@ KasmVNC.
 
 ## The injector + container-contribution shape
 
-This mirrors Che's bundled desktop editors:
+This is the real Che container-contribution model (like che-code):
 
 - The **injector** component (from `asfp-editor` / `studio-editor`) runs at
-  `preStart` and `cp -a`'s the relocatable IDE `/opt` tree plus the entrypoint +
-  first-run seed assets into a shared `volume: {}` mounted at
-  `/che-android-studio`.
-- The **runtime** component (from `asfp-dev` / `studio-dev`, marked
-  `controller.devfile.io/container-contribution: true`) provides KasmVNC,
-  openbox, the GUI libs, the Android SDK, and the JCEF JBR. Its `postStart`
-  command execs the injected entrypoint.
+  `preStart` and `cp`'s the relocatable IDE `/opt` tree, the **relocated KasmVNC**
+  (unpacked from its `.deb` — there is no portable tarball), a throwaway cert,
+  openbox config, and the entrypoint + first-run seed assets into a shared
+  `volume: {}` mounted at `/che-android-studio`.
+- The **runtime** component, marked
+  `controller.devfile.io/container-contribution: true`, is MERGED by the
+  DevWorkspace controller into the workspace's toolchain (dev) container — the
+  user's image wins (the editor's is a placeholder, the published `sdk` base). Its
+  `postStart` command execs the staged entrypoint, which puts the staged KasmVNC on
+  `PATH`/`PERL5LIB` and launches it.
 
-So the heavy, non-relocatable pieces (KasmVNC, apt packages, the SDK) live in the
-dev image, while the swappable IDE payload lives in the tiny injector image.
+So the split is by RELOCATABILITY, not by "IDE vs tools": the self-contained,
+swappable pieces (IDE, KasmVNC binaries + www, cert, assets) ride the volume from
+the tiny injector; the non-relocatable pieces they link against (GUI/streaming
+runtime libs) plus the Android SDK + JCEF JBR live in the `sdk` toolchain image.
+The user OWNS that toolchain container — the editor only contributes onto it.
+
+### Standalone vs. merged
+
+If the workspace has no dev container of its own, the contribution runs
+**standalone** on the `sdk` placeholder image (GUI + SDK present → works). If the
+workspace supplies its own dev container, the contribution **merges** into it and
+that image wins — so it must be GUI-capable (build `FROM …/sdk`). See the BYO
+toolchain contract in `DEVFILE.md`.
 
 ## Lifecycle
 
@@ -60,11 +75,12 @@ dev image, while the swappable IDE payload lives in the tiny injector image.
    wraps each editor definition in a labeled ConfigMap; the dashboard serves them
    at `/dashboard/api/editors`.
 2. **Workspace start** (per developer): the developer picks the editor (or a repo
-   selects it via `.che/che-editor.yaml`). Che materializes the pod, the injector
-   stages the IDE, and the runtime's entrypoint forces `HOME`/`XDG` to the PVC,
-   seeds first-run state, starts dbus, writes `~/.vnc/xstartup`, and execs KasmVNC
-   (which starts its own X server and runs xstartup → openbox + auto-launched,
-   maximized IDE).
+   selects it via `.che/che-editor.yaml`). Che materializes the pod; the injector
+   stages the IDE + relocated KasmVNC + assets into the shared volume; the merged
+   contribution's entrypoint forces `HOME`/`XDG` to the PVC, seeds first-run state,
+   places openbox config, starts dbus, writes `~/.vnc/xstartup`, and execs the
+   STAGED KasmVNC (which starts its own X server and runs xstartup → openbox +
+   auto-launched, maximized IDE).
 3. **Use**: the developer clicks the desktop endpoint and lands in the KasmVNC
    HTML5 client with the IDE already running.
 4. **Stop**: the pod is removed; the per-user PVC persists, so IDE caches survive

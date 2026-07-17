@@ -41,30 +41,36 @@ What we give up vs Selkies:
 
 ## Container layout
 
-The desktop layer (`container/desktop/setup-desktop.sh`, applied in the dev
-images) installs the KasmVNC `.deb` (pinned by `KASMVNC_VERSION`).
-`container/entrypoint.sh` execs `kasmvncserver` on
-`127.0.0.1:6901` — it starts its own X server and runs `~/.vnc/xstartup`,
-which brings up openbox and auto-launches ASfP (kiosk model — see
-ARCHITECTURE.md / CLAUDE.md).
+KasmVNC is RELOCATED, not baked into a runtime image. KasmVNC publishes no
+portable tarball, so `container/editor/Containerfile` unpacks its `.deb` (pinned
+by `KASMVNC_VERSION`) into a movable prefix under `/opt/che-android-studio/kasmvnc`
+and the injector stages it onto the shared volume. The GUI/streaming RUNTIME LIBS
+it links against (X libs, mesa/DRI, fonts, perl + the `.deb`'s Perl-module deps)
+live in the `sdk` toolchain base (`container/sdk/Containerfile`). At runtime
+`container/entrypoint.sh` puts the staged prefix on `PATH`/`PERL5LIB` and execs the
+staged `kasmvncserver` on `127.0.0.1:6901` — it starts its own X server and runs
+`~/.vnc/xstartup`, which brings up openbox and auto-launches the IDE (kiosk model —
+see ARCHITECTURE.md / CLAUDE.md).
 
 Key flags from `entrypoint.sh`:
 
 ```
 kasmvncserver :1 \
+    -config <staged-defaults>,~/.vnc/kasmvnc.yaml \  # relocated: replace the /usr,/etc paths it die's on
     -interface 127.0.0.1 \   # only Che's gateway can reach the port
     -websocketPort 6901 \    # HTTP+WS endpoint, no separate VNC port
-    -SecurityTypes None \    # Che gateway already authenticated
-    -select-de manual \      # keep our ~/.vnc/xstartup (openbox + ASfP)
+    -SecurityTypes None \    # RFB layer; NOT enough on its own
+    -DisableBasicAuth 1 \    # else the websocket 401s everything incl. /healthz
+    -select-de manual \      # keep our ~/.vnc/xstartup (openbox + IDE)
     -fg                       # foreground; pid 1 of the pod
 ```
 
 The editor definition's runtime component (`deploy/*-editor-definition.yaml`)
-declares the endpoint:
+declares the endpoint (`asfp-desktop` / `studio-desktop`):
 
 ```yaml
 endpoints:
-  - name: asfp-desktop
+  - name: asfp-desktop      # studio-desktop in the Android Studio definition
     targetPort: 6901
     exposure: public
     protocol: https

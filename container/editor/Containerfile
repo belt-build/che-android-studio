@@ -1,12 +1,20 @@
-# {asfp,studio}-editor — the IDE injector image.
+# {asfp,studio}-editor — the IDE + streaming injector image.
 #
-# This image's ONLY job is to carry the relocatable IDE payload (a self-contained
-# /opt tree) plus the entrypoint + first-run seed assets, and stage them into a
-# shared volume at workspace start. The editor definition's injector `command`
-# does `cp -a` of /opt/che-ide + the assets into the shared volume; the
-# container-contribution then runs the entrypoint in the DEV container (which
-# provides KasmVNC, openbox, the SDK, the JCEF JBR). openbox/KasmVNC are NOT
-# here — they live in the dev image (non-relocatable apt packages).
+# This image's ONLY job is to carry the PORTABLE payload that gets staged onto a
+# shared volume at workspace start, so the toolchain (dev) container stays free of
+# any IDE/streaming specifics. That payload is:
+#   * the relocatable IDE tree (/opt/che-ide → a self-contained /opt install),
+#   * the RELOCATED KasmVNC server (extracted from its .deb into a movable prefix
+#     — KasmVNC ships no portable tarball, so we unpack the .deb ourselves),
+#   * the entrypoint + first-run seed assets + openbox config + a throwaway cert.
+# The editor definition's injector `command` copies /opt/che-ide + everything under
+# /opt/che-android-studio into the shared volume; the container-contribution then
+# execs the entrypoint in the TOOLCHAIN container (the `sdk` image / the user's dev
+# container), which provides the GUI + streaming RUNTIME LIBS these binaries link
+# against, plus the Android SDK + JCEF JBR.
+#
+# So: the swappable IDE + stream live HERE; the non-relocatable runtime libs live
+# in the `sdk` base. Nothing IDE-specific is baked into the toolchain container.
 #
 # Parameterized by IDE_FLAVOR so ONE Containerfile builds both flavors:
 #   asfp   → ASfP (.deb)            → asfp-editor
@@ -20,6 +28,11 @@ FROM docker.io/library/ubuntu:22.04
 ARG DEBIAN_FRONTEND=noninteractive
 
 ARG IDE_FLAVOR=asfp
+
+# KasmVNC .deb to relocate onto the shared volume. Keep the runtime-lib set in
+# container/sdk/Containerfile in sync with this version's Depends:.
+ARG KASMVNC_VERSION=1.4.0
+ARG KASMVNC_DEB_URL=https://github.com/kasmtech/KasmVNC/releases/download/v${KASMVNC_VERSION}/kasmvncserver_jammy_${KASMVNC_VERSION}_amd64.deb
 
 # ASfP (.deb) coordinates. Codename has a literal space → %20 in the URL.
 ARG ASFP_VERSION=2025.3.2.6
@@ -36,9 +49,13 @@ ARG STUDIO_DOWNLOAD_URL=https://dl.google.com/dl/android/studio/ide-zips/${STUDI
 #   * sudo — the postinst runs `sudo sed -i ...` to rewrite dpkg's file lists.
 #     We're root during the build so it's a no-op wrapper, but it must EXIST on
 #     PATH or dpkg --configure fails with "sudo: not found" (exit 127).
+#   * dpkg-deb — to unpack the KasmVNC .deb payload into a relocatable prefix.
+#   * python3 — runs inject-subpath-fix.py against the staged noVNC www.
+#   * openssl — generates the throwaway cert that satisfies KasmVNC's cert gate.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl \
         desktop-file-utils sudo \
+        dpkg python3 openssl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 # Passwordless sudo so the ASfP postinst's `sudo sed` never prompts (build runs
 # as root, so it's a passthrough — but make it unconditional).
@@ -70,11 +87,66 @@ RUN set -eux; \
 # launcher, seed templates differ slightly between ASfP and Android Studio).
 ENV IDE_FLAVOR=${IDE_FLAVOR}
 
-# First-run seed templates + IDE vmoptions + the desktop session entrypoint.
-# These are copied into the shared volume by the injector command and consumed
-# by the entrypoint running in the dev container.
+# --- Relocate KasmVNC onto the (soon-to-be-shared) /opt tree -----------------
+# KasmVNC publishes no portable tarball (only .deb/.rpm/.apk), so we unpack the
+# .deb DATA payload into a relocatable prefix. The layout is preserved exactly
+# (usr/bin, usr/share/kasmvnc, usr/share/perl5, usr/lib/kasmvncserver) because the
+# `kasmvncserver` Perl launcher resolves siblings relative to $0 and `use`s its
+# KasmVNC::* modules from usr/share/perl5 — the entrypoint sets PATH + PERL5LIB to
+# this prefix. `-select-de` needs select-de.sh at ../builder/startup/deb/ when the
+# binary is NOT under /usr (the launcher's LocalSelectDePath), so mirror it there.
+# The .deb's postinst normally makes generic update-alternatives symlinks
+# (Xkasmvnc -> Xvnc, kasmvncpasswd -> vncpasswd, via sed s/kasm//); dpkg-deb -x
+# skips maintainer scripts and the launcher execs ${exedir}Xvnc + vncpasswd, so
+# recreate the two it needs alongside the binaries.
+ARG KASM_PREFIX=/opt/che-android-studio/kasmvnc
+RUN set -eux; \
+    deb=/tmp/kasmvnc.deb; \
+    curl -fsSL -o "${deb}" "${KASMVNC_DEB_URL}"; \
+    mkdir -p "${KASM_PREFIX}"; \
+    dpkg-deb -x "${deb}" "${KASM_PREFIX}"; \
+    rm -f "${deb}"; \
+    test -x "${KASM_PREFIX}/usr/bin/Xkasmvnc"; \
+    test -x "${KASM_PREFIX}/usr/bin/kasmvncserver"; \
+    test -f "${KASM_PREFIX}/usr/share/kasmvnc/www/index.html"; \
+    test -f "${KASM_PREFIX}/usr/share/perl5/KasmVNC/Config.pm"; \
+    ln -s Xkasmvnc     "${KASM_PREFIX}/usr/bin/Xvnc"; \
+    ln -s kasmvncpasswd "${KASM_PREFIX}/usr/bin/vncpasswd"; \
+    mkdir -p "${KASM_PREFIX}/usr/builder/startup/deb"; \
+    cp "${KASM_PREFIX}/usr/lib/kasmvncserver/select-de.sh" \
+       "${KASM_PREFIX}/usr/builder/startup/deb/select-de.sh"
+
+# --- noVNC sub-path websocket fix (build-time, against the staged www) --------
+# Inject the path-from-location script into the RELOCATED www so the client's
+# websocket targets Che's per-workspace sub-path instead of the host root. Done
+# once here (immutable, travels in the volume) rather than at runtime.
+COPY kasmvnc-subpath-fix.html /opt/che-android-studio/kasmvnc-subpath-fix.html
+COPY inject-subpath-fix.py    /usr/local/bin/che-android-studio-inject-subpath
+RUN set -eux; \
+    python3 /usr/local/bin/che-android-studio-inject-subpath \
+        "${KASM_PREFIX}/usr/share/kasmvnc/www" \
+        /opt/che-android-studio/kasmvnc-subpath-fix.html; \
+    grep -q 'che-android-studio: sub-path websocket fix' \
+        "${KASM_PREFIX}/usr/share/kasmvnc/www/index.html"
+
+# --- Throwaway TLS cert (satisfies KasmVNC's unconditional cert gate) --------
+# kasmvncserver always checks its configured cert+key exist and are READABLE,
+# even with require_ssl: false. Ship a world-readable throwaway pair in the
+# volume so the gate passes regardless of the toolchain container's /etc (the
+# arbitrary SCC UID can't traverse the Debian snakeoil key's 0710 dir). The cert
+# is NEVER used for TLS — the wire is plain HTTP terminated at Che's gateway.
+RUN set -eux; \
+    mkdir -p /opt/che-android-studio/pki; \
+    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -subj "/CN=localhost" \
+        -keyout /opt/che-android-studio/pki/snakeoil.key \
+        -out    /opt/che-android-studio/pki/snakeoil.pem
+
+# First-run seed templates + IDE vmoptions + openbox config + the desktop session
+# entrypoint. These are copied into the shared volume by the injector command and
+# consumed by the entrypoint running in the toolchain container.
 COPY skel/                /opt/che-android-studio/skel/
 COPY studio.vmoptions     /opt/che-android-studio/studio.vmoptions
 COPY openbox/rc.xml       /opt/che-android-studio/openbox-rc.xml
+COPY openbox/dark-themerc /opt/che-android-studio/openbox-dark-themerc
 COPY entrypoint.sh        /opt/che-android-studio/entrypoint.sh
 RUN chmod -R a+rX /opt/che-android-studio /opt/che-ide "$(readlink -f /opt/che-ide)"
