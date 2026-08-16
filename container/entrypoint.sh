@@ -176,6 +176,14 @@ IDE_SYSTEM_PATH="/tmp/che-ide/${IDE_CONFIG_DIRNAME}/system"
 # only symptom was `BELT_TREE_PATH: unbound variable` after eight successful
 # seeds.
 BELT_TREE_PATH="${BELT_TREE_PATH:-/aosp/src}"
+# The project the IDE opens on start, when the tree is actually mounted. A Belt
+# AAOS session exists to work on this one tree; making the developer pick it
+# from a welcome screen is a step that can only be got wrong.
+if [ -d "${BELT_TREE_PATH}/build/make" ]; then
+    BELT_OPEN_PROJECT="${BELT_TREE_PATH}"
+else
+    BELT_OPEN_PROJECT=""
+fi
 IDE_LOG_PATH="/tmp/che-ide/${IDE_CONFIG_DIRNAME}/log"
 mkdir -p "${IDE_SYSTEM_PATH}" "${IDE_LOG_PATH}" 2>/dev/null || true
 log "IDE system/caches relocated off idmapped PVC → ${IDE_SYSTEM_PATH}"
@@ -506,6 +514,7 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}"
 export ANDROID_HOME="${ANDROID_SDK_ROOT}"
 export STUDIO_VM_OPTIONS="${STUDIO_VM_OPTIONS}"
+BELT_OPEN_PROJECT="${BELT_OPEN_PROJECT}"
 
 # SINGLE INSTANCE. KasmVNC runs this script TWICE — once from the server process
 # and once from its child — so without a guard every session starts two window
@@ -530,8 +539,13 @@ openbox &
 # Auto-launch the IDE via the NATIVE launcher (bin/studio), relaunching if it exits.
 if [ -x "${STUDIO_BIN}" ]; then
     while true; do
-        echo "[xstartup] starting ${STUDIO_BIN}"
-        "${STUDIO_BIN}" || echo "[xstartup] IDE exited (\$?); relaunching in 2s"
+        echo "[xstartup] starting ${STUDIO_BIN} ${BELT_OPEN_PROJECT}"
+        # OPENED BY ARGUMENT, not by recentProjects.xml. Seeding the recent list
+        # puts the path in front of the IDE but does not make it open anything —
+        # tried, and the session came up on the welcome screen with the path
+        # correctly seeded. The launcher takes a project directory, which is
+        # unambiguous. Empty when no tree is mounted, and the IDE opens as before.
+        "${STUDIO_BIN}" ${BELT_OPEN_PROJECT} || echo "[xstartup] IDE exited (\$?); relaunching in 2s"
         sleep 2
     done &
 else
