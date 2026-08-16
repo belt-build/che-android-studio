@@ -179,10 +179,13 @@ log "IDE system/caches relocated off idmapped PVC → ${IDE_SYSTEM_PATH}"
 # under $HOME; system/log move to /tmp.
 # UI SCALE. A streamed desktop at the browser's native resolution renders the
 # IDE too small to read — every developer's first act was to find the zoom
-# setting. 125% is the value that makes it legible at native resolution; set
-# through the vmoptions channel rather than an options XML because
-# `ide.ui.scale` is a documented platform property, where the equivalent XML key
-# moves between releases and fails SILENTLY when it is wrong.
+# setting.
+#
+# THE SETTING THE UI READS IS NotRoamableUiSettings/ideScale, seeded from
+# skel/ide-options/other.xml. This property is kept because it applies before
+# any settings file is loaded, but on its own it is NOT enough: set only here,
+# Appearance > Accessibility > Zoom still reads 100%. Verified by changing the
+# zoom in a live IDE and finding where it landed. Keep the two values equal.
 IDE_UI_SCALE="${IDE_UI_SCALE:-1.25}"
 
 RUNTIME_VM_OPTIONS="${HOME}/.vnc/studio-runtime.vmoptions"
@@ -306,6 +309,7 @@ seed_first_run_state() {
     generate_jdk_table                                     "${opts}/jdk.table.xml"
     seed_if_absent "ide-options/ide.general.xml"           "${opts}/ide.general.xml"
     seed_if_absent "ide-options/project.default.xml"       "${opts}/project.default.xml"
+    seed_if_absent "ide-options/other.xml"                 "${opts}/other.xml"
     # Boot the IDE on the JCEF-enabled JBR (Cuttlefish view needs JCEF). The
     # *.jdk file is a one-line path to the runtime dir; create if absent.
     if [ -d "${JCEF_JBR_DIR}" ] && [ ! -e "${cfg}/studio.jdk" ]; then
