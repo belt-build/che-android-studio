@@ -71,6 +71,11 @@ log "IDE config dir = ${IDE_CONFIG_DIRNAME} (from product-info.json dataDirector
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/android-sdk}"
 # JCEF-enabled JBR (Cuttlefish view needs JCEF; the bundled IDE JBR lacks it).
 JCEF_JBR_DIR="${JCEF_JBR_DIR:-/opt/che-android-studio/jbr-jcef}"
+# The name the bundled JBR is registered under in jdk.table.xml, and referenced
+# by from the default project's project-jdk-name. The two must agree exactly —
+# a mismatch is silent and leaves the project JDK undefined, which is the bug
+# this exists to fix.
+JBR_SDK_NAME="${JBR_SDK_NAME:-JBR-21}"
 
 # Align JAVA_HOME to the IDE's bundled JBR so Gradle's JDK == JAVA_HOME. Android
 # Studio runs Gradle under its bundled JBR (${IDE_HOME}/jbr); if JAVA_HOME points
@@ -172,6 +177,14 @@ log "IDE system/caches relocated off idmapped PVC → ${IDE_SYSTEM_PATH}"
 # plus the idea.*.path overrides. STUDIO_VM_OPTIONS is the verified injection
 # channel (the native launcher reads <PRODUCT>_VM_OPTIONS). config/plugins stay
 # under $HOME; system/log move to /tmp.
+# UI SCALE. A streamed desktop at the browser's native resolution renders the
+# IDE too small to read — every developer's first act was to find the zoom
+# setting. 125% is the value that makes it legible at native resolution; set
+# through the vmoptions channel rather than an options XML because
+# `ide.ui.scale` is a documented platform property, where the equivalent XML key
+# moves between releases and fails SILENTLY when it is wrong.
+IDE_UI_SCALE="${IDE_UI_SCALE:-1.25}"
+
 RUNTIME_VM_OPTIONS="${HOME}/.vnc/studio-runtime.vmoptions"
 {
     [ -r "${STUDIO_VM_OPTIONS}" ] && cat "${STUDIO_VM_OPTIONS}"
@@ -179,7 +192,8 @@ RUNTIME_VM_OPTIONS="${HOME}/.vnc/studio-runtime.vmoptions"
         "-Didea.config.path=${XDG_CONFIG_HOME}/Google/${IDE_CONFIG_DIRNAME}" \
         "-Didea.plugins.path=${XDG_CONFIG_HOME}/Google/${IDE_CONFIG_DIRNAME}/plugins" \
         "-Didea.system.path=${IDE_SYSTEM_PATH}" \
-        "-Didea.log.path=${IDE_LOG_PATH}"
+        "-Didea.log.path=${IDE_LOG_PATH}" \
+        "-Dide.ui.scale=${IDE_UI_SCALE}"
 } > "${RUNTIME_VM_OPTIONS}" 2>/dev/null \
     && { STUDIO_VM_OPTIONS="${RUNTIME_VM_OPTIONS}"; export STUDIO_VM_OPTIONS; \
          log "wrote ${RUNTIME_VM_OPTIONS} (VFS off PVC, config on PVC)"; } \
@@ -211,7 +225,35 @@ generate_jdk_table() {
             [ -d "${plat}" ] && levels="${levels} ${plat##*/android-}"
         done
     fi
-    [ -n "${levels}" ] || { log "WARN: no Android platforms found for jdk.table.xml"; return 0; }
+    # A JAVA SDK, first. Every entry this function used to write was an
+    # `Android SDK`, so the table registered no JDK at all and a freshly
+    # generated project opened on "Project JDK is not defined" — the developer
+    # then picked one by hand, every time, in every session. The bundled JBR is
+    # the JDK the IDE already runs on, so it is the only defensible default.
+    local jbr="${IDE_HOME}/jbr" jdk_entry=""
+    if [ -x "${jbr}/bin/java" ]; then
+        jdk_entry="    <jdk version=\"2\">
+      <name value=\"${JBR_SDK_NAME}\" />
+      <type value=\"JavaSDK\" />
+      <homePath value=\"${jbr}\" />
+      <roots>
+        <annotationsPath><root type=\"composite\" /></annotationsPath>
+        <classPath><root type=\"composite\" /></classPath>
+        <javadocPath><root type=\"composite\" /></javadocPath>
+        <sourcePath><root type=\"composite\" /></sourcePath>
+      </roots>
+      <additional />
+    </jdk>
+"
+    else
+        log "WARN: no bundled JBR at ${jbr}; project JDK will be undefined"
+    fi
+    entries="${jdk_entry}"
+
+    [ -n "${levels}" ] || {
+        log "WARN: no Android platforms found for jdk.table.xml"
+        [ -n "${jdk_entry}" ] || return 0
+    }
     for lvl in ${levels}; do
         [ -d "${ANDROID_SDK_ROOT}/platforms/android-${lvl}" ] || continue
         entries="${entries}    <jdk version=\"2\">
@@ -263,6 +305,7 @@ seed_first_run_state() {
     seed_if_absent "ide-options/android.sdk.path.xml"      "${opts}/android.sdk.path.xml"
     generate_jdk_table                                     "${opts}/jdk.table.xml"
     seed_if_absent "ide-options/ide.general.xml"           "${opts}/ide.general.xml"
+    seed_if_absent "ide-options/project.default.xml"       "${opts}/project.default.xml"
     # Boot the IDE on the JCEF-enabled JBR (Cuttlefish view needs JCEF). The
     # *.jdk file is a one-line path to the runtime dir; create if absent.
     if [ -d "${JCEF_JBR_DIR}" ] && [ ! -e "${cfg}/studio.jdk" ]; then
@@ -290,6 +333,26 @@ clear_stale_locks
 
 # --- D-Bus ------------------------------------------------------------------
 mkdir -p /tmp/dbus
+# A CONTAINER RESTART INHERITS /tmp, so the socket from the previous — dead —
+# session is still sitting there and dbus-daemon fails with
+#   Failed to bind socket "/tmp/dbus/session-bus": Address already in use
+# which exits the entrypoint, which restarts the container, which finds the same
+# socket. One crash for any reason becomes a permanent CrashLoopBackOff, and the
+# only clue is a bind error for a session nobody is running. Observed live.
+#
+# Safe because this runs before anything else in the session exists: a socket
+# with no dbus-daemon behind it is by definition an orphan.
+if [ -S /tmp/dbus/session-bus ] && ! pgrep -f 'dbus-daemon.*session-bus' >/dev/null 2>&1; then
+    rm -f /tmp/dbus/session-bus /tmp/dbus/session-addr
+    log "removed a stale D-Bus socket left by a previous session"
+fi
+
+# The xstartup single-instance lock is stale for exactly the same reason, and
+# fails WORSE: its EXIT trap does not run when the container is SIGKILLed, so a
+# surviving lock directory would park BOTH invocations and start no IDE at all.
+# Cleared here, where the session is provably new, rather than trusted to a trap.
+rmdir /tmp/che-as-session.lock 2>/dev/null \
+    && log "removed a stale xstartup session lock" || true
 DBUS_ADDR_FILE=/tmp/dbus/session-addr
 dbus-daemon --session --print-address=3 --fork \
     --address="unix:path=/tmp/dbus/session-bus" 3>"${DBUS_ADDR_FILE}"
@@ -311,6 +374,23 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT}"
 export ANDROID_HOME="${ANDROID_SDK_ROOT}"
 export STUDIO_VM_OPTIONS="${STUDIO_VM_OPTIONS}"
+
+# SINGLE INSTANCE. KasmVNC runs this script TWICE — once from the server process
+# and once from its child — so without a guard every session starts two window
+# managers and two IDEs, which then race for IntelliJ's DirectoryLock. One wins;
+# the loser reports "Process (NNN) is still running and does not respond" at the
+# user. It usually resolves, which is exactly why it survived this long: it is a
+# race, not a failure, until the day the winner is slow and neither can claim the
+# lock.
+#
+# mkdir is the atomic primitive here — no flock dependency, and the loser is
+# unambiguous. It must NOT exit: KasmVNC tears the X server down when xstartup
+# returns, so the second invocation stays parked instead.
+if ! mkdir "/tmp/che-as-session.lock" 2>/dev/null; then
+    echo "[xstartup] another invocation already owns this session; parking"
+    exec sleep infinity
+fi
+trap 'rmdir /tmp/che-as-session.lock 2>/dev/null || true' EXIT
 
 # Window manager (backgrounded; long-lived).
 openbox &

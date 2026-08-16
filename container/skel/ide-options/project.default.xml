@@ -1,0 +1,17 @@
+<application>
+  <component name="ProjectManager">
+    <defaultProject>
+      <!-- The DEFAULT project's JDK. Without this a generated ASfP project
+           opens on "Project JDK is not defined" and the developer picks one by
+           hand, in every session, because ASfP regenerates the project on sync.
+
+           project-jdk-name must match the JavaSDK entry the entrypoint writes
+           into jdk.table.xml (JBR_SDK_NAME) — the two agreeing is the whole
+           mechanism, and a mismatch fails silently.
+
+           Language level 17: what current AOSP platform Java targets. -->
+      <component name="ProjectRootManager" version="2" languageLevel="JDK_17"
+                 default="true" project-jdk-name="JBR-21" project-jdk-type="JavaSDK" />
+    </defaultProject>
+  </component>
+</application>
