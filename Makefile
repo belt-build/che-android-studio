@@ -10,8 +10,22 @@ CONTAINER_TOOL     ?= podman
 
 # Android API levels baked into the SDK image (space-separated). Override e.g.
 #   make sdk-image ANDROID_API_LEVELS="33 34 35 36" ANDROID_BUILD_TOOLS="34.0.0 36.0.0"
-ANDROID_API_LEVELS ?= 34 36
-ANDROID_BUILD_TOOLS ?= 34.0.0 36.0.0
+# THE API LEVEL MUST MATCH THE PLATFORM TREE YOU EDIT. A team builds one AOSP
+# release, and the IDE resolves framework APIs against
+# `platforms/android-<level>`; point it at the wrong one and the editor still
+# opens, it just resolves against the wrong android.jar — confusing squiggles
+# rather than an error. The tree states its own level in
+# `build/release/flag_values/<release>/RELEASE_PLATFORM_SDK_VERSION.textproto`,
+# and that is the value to use. Read it from the tree, not from the version
+# name: a pre-finalization checkout reports PLATFORM_VERSION "Baklava"
+# (Android 16, finalized API 36) while still numbering itself 35.
+#
+#   make sdk-image ANDROID_API_LEVELS=36 ANDROID_BUILD_TOOLS=36.0.0
+#
+# The default spans the levels an in-flight Android 16 tree can ask for, so a
+# build at defaults works before and after API finalization.
+ANDROID_API_LEVELS ?= 34 35 36
+ANDROID_BUILD_TOOLS ?= 34.0.0 35.0.0 36.0.0
 
 # Five images across the split (build order matters: SDK first, then the dev
 # images that FROM it, then the injectors).
