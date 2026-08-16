@@ -299,9 +299,39 @@ seed_first_run_state() {
     local cfg="${XDG_CONFIG_HOME}/Google/${IDE_CONFIG_DIRNAME}"
     local opts="${cfg}/options"
     # Data-collection consent → opted out ("Don't Send").
+    #
+    # THE SALT MUST NOT BE THE SENTINEL, AND IS GENERATED PER SESSION.
+    #
+    # This used to seed `"saltValue":0,"saltSkew":-1` — what an UNINITIALISED
+    # settings file looks like — so the IDE ran first-run initialisation, showed
+    # the usage-statistics dialog, and wrote a real salt afterwards. Every fresh
+    # pod re-seeded the sentinel and re-asked, so the developer answered the same
+    # question on every open. Diffing the seeded file against what the IDE wrote
+    # 14 minutes into a session, after the dialog was dismissed, showed only
+    # saltValue and saltSkew differing.
+    #
+    # What the salt DOES is inferred from that behaviour, not from source: in
+    # Android Studio's analytics it anonymises identifiers in usage reports, and
+    # saltSkew looks like a rotation period. It is inert here either way —
+    # hasOptedIn:false means nothing is ever sent — but it is generated rather
+    # than baked, because a value baked into the image is one anonymising salt
+    # shared by every developer who runs it, which is the wrong default to ship
+    # if telemetry is ever enabled. Generating also does not depend on the
+    # sentinel theory being right: a fresh initialised value is correct whatever
+    # the field means.
     seed_if_absent "local-share/Google/consentOptions/accepted" \
         "${XDG_DATA_HOME}/Google/consentOptions/accepted"
-    seed_if_absent "android/analytics.settings" "${HOME}/.android/analytics.settings"
+    if [ ! -e "${HOME}/.android/analytics.settings" ]; then
+        mkdir -p "${HOME}/.android" 2>/dev/null || true
+        # A 60-digit decimal, the shape the IDE writes, from the kernel's RNG.
+        _salt="$(od -An -N24 -tu8 /dev/urandom 2>/dev/null | tr -d ' \n' | cut -c1-58)"
+        [ -n "${_salt}" ] || _salt="1"
+        sed -e "s|__SALT_VALUE__|-${_salt}|" -e "s|__SALT_SKEW__|738|" \
+            "${SKEL_DIR}/android/analytics.settings" > "${HOME}/.android/analytics.settings" 2>/dev/null \
+            && log "seeded ${HOME}/.android/analytics.settings (opted out, salt generated)" \
+            || log "WARN: failed to seed analytics.settings"
+        unset _salt
+    fi
     # Skip wizard + SDK path + IDE custom decorations. jdk.table.xml is generated
     # per installed API level (below), not seeded from a static template.
     seed_if_absent "ide-options/androidStudioFirstRun.xml" "${opts}/androidStudioFirstRun.xml"
