@@ -310,6 +310,17 @@ seed_first_run_state() {
     seed_if_absent "ide-options/ide.general.xml"           "${opts}/ide.general.xml"
     seed_if_absent "ide-options/project.default.xml"       "${opts}/project.default.xml"
     seed_if_absent "ide-options/other.xml"                 "${opts}/other.xml"
+    # recentProjects.xml carries the tree path, which is the CLUSTER's (the
+    # workspace mounts it; see BELT_AAOS_TREE_PATH) — so it is substituted here
+    # rather than baked, and the file is only seeded when the tree is actually
+    # present. Opening a path that is not mounted would land the developer in an
+    # empty project, which is worse than the welcome screen.
+    if [ ! -e "${opts}/recentProjects.xml" ] && [ -d "${BELT_TREE_PATH}/build/make" ]; then
+        sed "s|__BELT_TREE_PATH__|${BELT_TREE_PATH}|g" \
+            "${SKEL_DIR}/ide-options/recentProjects.xml" > "${opts}/recentProjects.xml" 2>/dev/null \
+            && log "seeded ${opts}/recentProjects.xml -> ${BELT_TREE_PATH}" \
+            || log "WARN: failed to seed recentProjects.xml"
+    fi
     # Boot the IDE on the JCEF-enabled JBR (Cuttlefish view needs JCEF). The
     # *.jdk file is a one-line path to the runtime dir; create if absent.
     if [ -d "${JCEF_JBR_DIR}" ] && [ ! -e "${cfg}/studio.jdk" ]; then
@@ -334,6 +345,49 @@ clear_stale_locks() {
     log "cleared any stale IDE .lock files"
 }
 clear_stale_locks
+
+# --- Pre-built IDE index ----------------------------------------------------
+# A published index, mounted READ-ONLY somewhere inert and copied in here.
+#
+# Copied, never mounted at the cache path: IntelliJ's VFS on a PVC corrupts —
+# the reason system/ is relocated off the idmapped PVC at all — so the artifact
+# is staged elsewhere and only its BYTES land where the IDE expects them. ~2 GiB
+# is a seconds-long copy, which is the whole reason an index is worth publishing
+# rather than rebuilding in every session.
+#
+# Only when OUR system dir is empty: a developer's own index always wins. And
+# the copy lands in a staging dir moved into place at the end, because a
+# HALF-copied system/ is worse than none — a partial one wedged startup for five
+# minutes with both IDE instances unable to take DirectoryLock.
+#
+# Keyed by the IDE's data-directory name, so an index published by a different
+# ASfP build does not match this path and is ignored: a version check that costs
+# nothing.
+# The mounted platform tree. Must match build-aosp's `tree-path` — the whole
+# warm-sharing contract rests on one absolute path (aaos-lane.md §6.1).
+BELT_TREE_PATH="${BELT_TREE_PATH:-/aosp/src}"
+ASFP_INDEX_MOUNT="${ASFP_INDEX_MOUNT:-/belt/asfp-index}"
+seed_prebuilt_index() {
+    local src="${ASFP_INDEX_MOUNT}/${IDE_CONFIG_DIRNAME}/system"
+    [ -d "${src}" ] || return 0
+    if [ -d "${IDE_SYSTEM_PATH}" ] && [ -n "$(ls -A "${IDE_SYSTEM_PATH}" 2>/dev/null)" ]; then
+        log "IDE system dir is not empty; keeping it over the published index"
+        return 0
+    fi
+    local staging="${IDE_SYSTEM_PATH}.incoming"
+    rm -rf "${staging}" 2>/dev/null || true
+    mkdir -p "$(dirname "${IDE_SYSTEM_PATH}")" 2>/dev/null || true
+    if cp -a "${src}" "${staging}" 2>/dev/null; then
+        rm -rf "${IDE_SYSTEM_PATH}" 2>/dev/null || true
+        mv "${staging}" "${IDE_SYSTEM_PATH}" \
+            && log "seeded IDE index from ${src} ($(du -sm "${IDE_SYSTEM_PATH}" 2>/dev/null | cut -f1) MiB)" \
+            || log "WARN: could not move the staged index into place; starting cold"
+    else
+        rm -rf "${staging}" 2>/dev/null || true
+        log "WARN: could not copy the published index; starting cold"
+    fi
+}
+seed_prebuilt_index
 
 # --- D-Bus ------------------------------------------------------------------
 mkdir -p /tmp/dbus

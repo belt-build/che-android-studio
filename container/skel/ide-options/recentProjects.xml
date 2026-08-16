@@ -1,0 +1,31 @@
+<application>
+  <!-- Open the platform tree on start, instead of the welcome screen.
+       
+       A Belt AAOS session exists to work on ONE tree, mounted at a path fixed
+       by contract (build-aosp's `tree-path`, mirrored by the CLI), with its
+       `.asfp-project` written there before the IDE starts. There is nothing for
+       a developer to choose on the welcome screen except that one directory, so
+       choosing it for them removes a step that can only be got wrong.
+
+       Paired with GeneralSettings/reopenLastProject in ide.general.xml: this
+       file supplies the path, that flag makes the IDE act on it.
+
+       Seeded only when absent (seed_if_absent), so a developer who opens
+       something else keeps their own recent list — this is a first-run default,
+       not a policy. If the path is not mounted, ASfP falls back to the welcome
+       screen, which is the pre-existing behaviour. -->
+  <component name="RecentProjectsManager">
+    <option name="additionalInfo">
+      <map>
+        <entry key="__BELT_TREE_PATH__">
+          <value>
+            <RecentProjectMetaInfo frameTitle="AOSP platform">
+              <option name="opened" value="true" />
+            </RecentProjectMetaInfo>
+          </value>
+        </entry>
+      </map>
+    </option>
+    <option name="lastProjectLocation" value="__BELT_TREE_PATH__" />
+  </component>
+</application>
