@@ -35,3 +35,32 @@
   }
 })();
 </script>
+
+<script>
+/* che-android-studio: client defaults.
+ *
+ * NATIVE RESOLUTION (KasmVNC's `enable_hidpi`) is OFF by default — the client
+ * reads it as `getSetting("enable_hidpi", …, false)` — so a streamed IDE is
+ * rendered at CSS pixels and looks soft on any HiDPI display. Every developer's
+ * first act was to go and find the toggle.
+ *
+ * Turning it on renders at the device's real pixels, which is sharper and
+ * correspondingly SMALLER — which is why the entrypoint pairs this with
+ * -Dide.ui.scale=1.25. The two are one decision and must ship together; native
+ * resolution alone gives you a crisp IDE you cannot read.
+ *
+ * Seeded, not forced: settings live in plain localStorage under their bare
+ * name, so this only fills in a value the user has never set. Toggle it in the
+ * KasmVNC control panel afterwards and that choice sticks.
+ */
+(function () {
+  try {
+    if (window.localStorage.getItem('enable_hidpi') === null) {
+      window.localStorage.setItem('enable_hidpi', 'true');
+    }
+  } catch (e) {
+    /* private-mode or blocked storage: the client falls back to its own
+       default, which is the pre-existing behaviour. Never break the page. */
+  }
+})();
+</script>
