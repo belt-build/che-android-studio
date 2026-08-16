@@ -419,6 +419,46 @@ seed_prebuilt_index() {
 }
 seed_prebuilt_index
 
+# --- Git identity from Che's user profile -----------------------------------
+# Che mounts the signed-in user at /config/user/profile (name, email, id), so a
+# session already knows who it belongs to — and without this the IDE's VCS
+# integration has no author and a commit fails with "please tell me who you
+# are".
+#
+# The email carries a provider suffix (`user@example.com@che`), which is Che's
+# and not the user's; it is stripped. When what is left is not email-shaped, the
+# `name` field is used instead — it is the account id, which in this deployment
+# IS an email. Nothing is invented: if neither yields an address, git is left
+# unconfigured, because a WRONG author on a commit is worse than an obvious
+# refusal to commit.
+#
+# Never overwrites an existing config: a developer's own identity, or one Che's
+# dashboard wrote, always wins.
+CHE_PROFILE_DIR="${CHE_PROFILE_DIR:-/config/user/profile}"
+seed_git_identity() {
+    local cfg="${HOME}/.gitconfig" name email
+    [ -e "${cfg}" ] && return 0
+    [ -d "${CHE_PROFILE_DIR}" ] || return 0
+    name="$(cat "${CHE_PROFILE_DIR}/name" 2>/dev/null || true)"
+    email="$(cat "${CHE_PROFILE_DIR}/email" 2>/dev/null || true)"
+    email="${email%@che}"
+    case "${email}" in *@*.*) ;; *) email="" ;; esac
+    if [ -z "${email}" ]; then
+        case "${name}" in *@*.*) email="${name}" ;; esac
+    fi
+    [ -n "${email}" ] || { log "no usable git identity in ${CHE_PROFILE_DIR}; leaving git unconfigured"; return 0; }
+    [ -n "${name}" ] || name="${email%%@*}"
+    {
+        printf '[user]\n\tname = %s\n\temail = %s\n' "${name}" "${email}"
+        # The tree is a mount owned by another uid; without this every git
+        # command in it refuses with "detected dubious ownership".
+        printf '[safe]\n\tdirectory = *\n'
+    } > "${cfg}" 2>/dev/null \
+        && log "seeded ${cfg} (${name} <${email}>)" \
+        || log "WARN: could not seed ${cfg}"
+}
+seed_git_identity
+
 # --- D-Bus ------------------------------------------------------------------
 mkdir -p /tmp/dbus
 # A CONTAINER RESTART INHERITS /tmp, so the socket from the previous — dead —
