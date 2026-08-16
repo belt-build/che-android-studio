@@ -480,8 +480,16 @@ seed_prebuilt_index() {
     if cp -a "${src}/." "${IDE_SYSTEM_PATH}/" 2>/dev/null && : > "${stamp}" 2>/dev/null; then
         log "seeded IDE index from ${src} ($(du -sm "${IDE_SYSTEM_PATH}" 2>/dev/null | cut -f1) MiB)"
     else
-        # Leave nothing rather than something partial.
-        [ -n "${IDE_SYSTEM_PATH}" ] && rm -rf "${IDE_SYSTEM_PATH:?}/." 2>/dev/null
+        # Leave nothing rather than something partial. NOT `rm -rf "$dir/."` —
+        # GNU rm refuses to remove '.' and the cleanup silently does nothing,
+        # which is worse than either outcome it was choosing between: a 99%
+        # copied index stays on disk while the log claims "starting cold".
+        # Observed exactly that when a UID change made 4 of 128 entries
+        # unreadable. Remove the directory and put it back empty.
+        if [ -n "${IDE_SYSTEM_PATH}" ]; then
+            rm -rf "${IDE_SYSTEM_PATH:?}" 2>/dev/null || true
+            mkdir -p "${IDE_SYSTEM_PATH}" 2>/dev/null || true
+        fi
         log "WARN: could not copy the published index; starting cold"
     fi
 }
