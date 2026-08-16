@@ -203,6 +203,40 @@ log "IDE system/caches relocated off idmapped PVC → ${IDE_SYSTEM_PATH}"
 # zoom in a live IDE and finding where it landed. Keep the two values equal.
 IDE_UI_SCALE="${IDE_UI_SCALE:-1.25}"
 
+# THE ANALYTICS CONSENT DIALOG IS A HARD BLOCKER, NOT AN ANNOYANCE. Do not
+# remove `jb.consents.confirmation.enabled`.
+#
+# `com.android.tools.idea.stats.ConsentDialog.showConsentDialogIfNeeded` runs
+# BEFORE the project is opened and is MODAL: it parks the EDT in
+# DialogWrapperPeerImpl$MyDialog.show() pumping its own event loop. Until a
+# human clicks it, the IDE opens no project, creates no .idea, and indexes
+# nothing — it just idles at ~4% CPU looking healthy. That is what defeated
+# every attempt to warm an index unattended; a jstack of the EDT is what
+# finally named it.
+#
+# Two things that look like fixes and are NOT: seeding
+# ~/.android/analytics.settings (that is Android's own telemetry state, a
+# different gate) and seeding consentOptions/accepted (the platform re-asks
+# whenever the recorded version differs from the build's, so a pinned version
+# buys one release at most). `-Drsch.send.usage.stat=false` does not suppress
+# it either — verified live, the dialog still came up. Only this property
+# turns the confirmation flow off outright.
+IDE_CONSENT_VM_OPTS="-Djb.consents.confirmation.enabled=false"
+
+# THE UNTRUSTED-PROJECT DIALOG IS THE SECOND HARD BLOCKER, for the same reason.
+# `TrustedProjectStartupDialog` is modal and runs before the project is
+# configured, so an unattended session parks on it exactly like the consent
+# dialog did — and it only became visible once the consent gate was removed,
+# because the two queue up behind each other. A cache-warming session that
+# nobody is watching must clear both or it silently indexes nothing.
+#
+# The tree is cloned by the platform from the project's own manifest repo into a
+# pod that exists to build it; there is no scenario where a developer is asked
+# to vouch for it, and no one to answer if there were. Property names read out
+# of the IDE's own constant pool rather than guessed.
+IDE_TRUST_VM_OPTS_1="-Didea.trust.disabled=true"
+IDE_TRUST_VM_OPTS_2="-Didea.trust.all.projects=true"
+
 RUNTIME_VM_OPTIONS="${HOME}/.vnc/studio-runtime.vmoptions"
 {
     [ -r "${STUDIO_VM_OPTIONS}" ] && cat "${STUDIO_VM_OPTIONS}"
@@ -211,7 +245,10 @@ RUNTIME_VM_OPTIONS="${HOME}/.vnc/studio-runtime.vmoptions"
         "-Didea.plugins.path=${XDG_CONFIG_HOME}/Google/${IDE_CONFIG_DIRNAME}/plugins" \
         "-Didea.system.path=${IDE_SYSTEM_PATH}" \
         "-Didea.log.path=${IDE_LOG_PATH}" \
-        "-Dide.ui.scale=${IDE_UI_SCALE}"
+        "-Dide.ui.scale=${IDE_UI_SCALE}" \
+        "${IDE_CONSENT_VM_OPTS}" \
+        "${IDE_TRUST_VM_OPTS_1}" \
+        "${IDE_TRUST_VM_OPTS_2}"
 } > "${RUNTIME_VM_OPTIONS}" 2>/dev/null \
     && { STUDIO_VM_OPTIONS="${RUNTIME_VM_OPTIONS}"; export STUDIO_VM_OPTIONS; \
          log "wrote ${RUNTIME_VM_OPTIONS} (VFS off PVC, config on PVC)"; } \
@@ -409,23 +446,42 @@ clear_stale_locks
 # ASfP build does not match this path and is ignored: a version check that costs
 # nothing.
 ASFP_INDEX_MOUNT="${ASFP_INDEX_MOUNT:-/belt/asfp-index}"
+# SEED IN PLACE, MARKED BY A STAMP — no staging directory, no rename.
+#
+# This used to copy into "<system>.incoming" and mv it into place. That move
+# failed in the real pod ("mv: cannot stat …/system.incoming") while the exact
+# same sequence, run by hand in the same container against the same mount,
+# succeeded every time — so the staging directory was going away underneath a
+# copy that had already reported success. The failure is silent in the worst
+# way: the IDE finds an empty system/, re-indexes the whole tree for ~40
+# minutes, and the session looks merely slow rather than broken.
+#
+# Rather than keep chasing what removes it, the rename is gone. Copying
+# straight into IDE_SYSTEM_PATH is safe because that directory is created
+# empty a few lines above and nothing else writes it before the IDE starts.
+# What the staging dance actually bought — never leaving a HALF-copied
+# system/, which wedges startup worse than no index at all — is bought instead
+# by a stamp file written only after cp succeeds, and by wiping the directory
+# on any failure. The stamp also distinguishes "we seeded this" from "the
+# developer has their own index here", which the old emptiness check could not.
 seed_prebuilt_index() {
     local src="${ASFP_INDEX_MOUNT}/${IDE_CONFIG_DIRNAME}/system"
+    local stamp="${IDE_SYSTEM_PATH}/.belt-index-seeded"
     [ -d "${src}" ] || return 0
-    if [ -d "${IDE_SYSTEM_PATH}" ] && [ -n "$(ls -A "${IDE_SYSTEM_PATH}" 2>/dev/null)" ]; then
-        log "IDE system dir is not empty; keeping it over the published index"
+    if [ -n "$(ls -A "${IDE_SYSTEM_PATH}" 2>/dev/null)" ]; then
+        if [ -e "${stamp}" ]; then
+            log "IDE index already seeded from a published artifact; keeping it"
+        else
+            log "IDE system dir is not empty; keeping it over the published index"
+        fi
         return 0
     fi
-    local staging="${IDE_SYSTEM_PATH}.incoming"
-    rm -rf "${staging}" 2>/dev/null || true
-    mkdir -p "$(dirname "${IDE_SYSTEM_PATH}")" 2>/dev/null || true
-    if cp -a "${src}" "${staging}" 2>/dev/null; then
-        rm -rf "${IDE_SYSTEM_PATH}" 2>/dev/null || true
-        mv "${staging}" "${IDE_SYSTEM_PATH}" \
-            && log "seeded IDE index from ${src} ($(du -sm "${IDE_SYSTEM_PATH}" 2>/dev/null | cut -f1) MiB)" \
-            || log "WARN: could not move the staged index into place; starting cold"
+    mkdir -p "${IDE_SYSTEM_PATH}" 2>/dev/null || true
+    if cp -a "${src}/." "${IDE_SYSTEM_PATH}/" 2>/dev/null && : > "${stamp}" 2>/dev/null; then
+        log "seeded IDE index from ${src} ($(du -sm "${IDE_SYSTEM_PATH}" 2>/dev/null | cut -f1) MiB)"
     else
-        rm -rf "${staging}" 2>/dev/null || true
+        # Leave nothing rather than something partial.
+        [ -n "${IDE_SYSTEM_PATH}" ] && rm -rf "${IDE_SYSTEM_PATH:?}/." 2>/dev/null
         log "WARN: could not copy the published index; starting cold"
     fi
 }
@@ -583,6 +639,23 @@ network:
     pem_key: /etc/che-android-studio/pki/snakeoil.key
 KASMYAML
 log "wrote ${HOME}/.vnc/kasmvnc.yaml (require_ssl: false)"
+
+# STALE X LOCK. kasmvncserver refuses a display whose /tmp/.X<n>-lock exists
+# ("A VNC server is already running as :1") and exits, which Kubernetes reads as
+# a failed container — so the pod CrashLoopBackOffs on a lock file rather than on
+# anything being wrong. Exactly one IDE session runs per pod (the xstartup mkdir
+# lock below enforces it), so any lock present at this point is leftover from a
+# previous attempt in this container, not a live server. Same reasoning as
+# clear_stale_locks above, one layer down.
+# `-kill` first: it is kasmvnc's own teardown and clears the pid/log/socket
+# bookkeeping under ~/.vnc that a bare `rm` of the lock leaves behind, which is
+# why removing only the lock file was not enough on its own.
+kasmvncserver -kill "${DISPLAY_NUM}" >/dev/null 2>&1 || true
+rm -f "/tmp/.X${DISPLAY_NUM#:}-lock" 2>/dev/null || true
+rm -f "/tmp/.X11-unix/X${DISPLAY_NUM#:}" 2>/dev/null || true
+rm -f "${HOME}/.vnc/"*":${DISPLAY_NUM#:}.pid" 2>/dev/null || true
+ls -la "/tmp/.X${DISPLAY_NUM#:}-lock" 2>/dev/null \
+    && log "WARN: /tmp/.X${DISPLAY_NUM#:}-lock survived cleanup — kasmvncserver will refuse the display"
 
 # --- KasmVNC ----------------------------------------------------------------
 # -DisableBasicAuth 1 is REQUIRED: -SecurityTypes None only covers the RFB layer;
