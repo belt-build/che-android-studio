@@ -33,6 +33,11 @@ APT_CONF_OPTS='-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-con
 # --- GUI runtime libs -------------------------------------------------------
 # What ASfP/IntelliJ + openbox + KasmVNC need to render. NO Xvfb (KasmVNC ships
 # its own X server). fonts-noto-cjk provides CJK glyph coverage.
+#
+# git/git-lfs: the IDE's VCS integration shells out to `git`, and a workspace
+# whose entire purpose is editing a git checkout was shipping without one — the
+# editor reported no executable found. git-lfs comes along because AOSP-adjacent
+# repos use it and a half-working clone is worse than an obvious failure.
 apt-get update
 apt-get install -y --no-install-recommends ${APT_CONF_OPTS} \
     openbox \
@@ -44,7 +49,8 @@ apt-get install -y --no-install-recommends ${APT_CONF_OPTS} \
     libgtk-3-0 libnss3 libcups2 libasound2 libpango-1.0-0 \
     fonts-dejavu-core fonts-noto-cjk fonts-noto-color-emoji \
     ca-certificates curl unzip python3 openssl \
-    desktop-file-utils
+    desktop-file-utils \
+    git git-lfs
 
 # --- KasmVNC (apt; non-relocatable, hence baked into the dev image) ---------
 deb=/tmp/kasmvncserver.deb
@@ -88,5 +94,30 @@ grep -q 'che-android-studio: sub-path websocket fix' /usr/share/kasmvnc/www/inde
 # 1000` in the terminal. Make the DBs group-writable so the entrypoint can
 # append an entry at runtime as the (group-0) arbitrary UID.
 chmod g=u /etc/passwd /etc/group
+
+# ...and BAKE the uid-1000 entry, because group-0 writability does not help the
+# deployment we actually run on. Che on vanilla Kubernetes starts this container
+# as uid=1000 GID=1000 — not group 0 — so the entrypoint's append fails with
+# `/etc/passwd: Permission denied` and every getpwuid() caller is left without a
+# user. Observed live, in three places at once:
+#
+#   * the terminal prompt reads `I have no name!@…`, which is bash printing \u
+#     when getpwuid(1000) fails;
+#   * Soong logs `Failed to get current user: user: unknown userid 1000` and
+#     then `Build sandboxing disabled due to nsjail error` — AOSP's nsjail
+#     genrules need that sandbox;
+#   * and Soong resolves BUILD_USERNAME to "unknown", which lands in the
+#     environment it hashes, so a warm out/ tree is re-analysed from scratch by
+#     an editor that merely opened it.
+#
+# Baking the entry fixes all three before anything runs, and costs nothing on
+# OpenShift: an arbitrary UID is not 1000, getent misses, and the runtime append
+# path above still applies.
+if ! getent passwd 1000 >/dev/null 2>&1; then
+    echo 'developer:x:1000:1000:che-android-studio:/tmp/che-home:/bin/bash' >> /etc/passwd
+fi
+if ! getent group 1000 >/dev/null 2>&1; then
+    echo 'developer:x:1000:' >> /etc/group
+fi
 
 echo "[setup-desktop] che-android-studio desktop layer installed"

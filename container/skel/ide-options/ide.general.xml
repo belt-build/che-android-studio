@@ -7,5 +7,13 @@
          Confirm/adjust the exact key against a live IDE toggled to "merge main
          menu into window title bar" if the header doesn't render. -->
     <option name="mergeMainMenuWithWindowTitle" value="true" />
+    <!-- Act on the seeded recentProjects.xml: open the platform tree on start
+         rather than the welcome screen. A Belt session exists to work on one
+         tree, at a path fixed by contract, whose .asfp-project is written
+         before the IDE starts — there is nothing to choose. Explicit rather
+         than relying on the platform default, because the default has moved
+         between releases and the failure is silent (a welcome screen looks like
+         a working IDE). -->
+    <option name="reopenLastProject" value="true" />
   </component>
 </application>

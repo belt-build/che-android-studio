@@ -1,0 +1,18 @@
+<application>
+  <!-- Appearance > Accessibility > Zoom, at 125%.
+       
+       Paired with KasmVNC's Native Resolution (enable_hidpi, seeded in
+       kasmvnc-subpath-fix.html): native resolution renders at the device's real
+       pixels, which is sharper and correspondingly smaller, so without this the
+       IDE is crisp and unreadable. The two ship together or not at all.
+
+       NotRoamableUiSettings/ideScale is what the Settings UI actually reads and
+       writes — verified by changing the setting in a live IDE and finding it
+       here. `-Dide.ui.scale` (also set, in the entrypoint's vmoptions) does NOT
+       back this control in ASfP 2025.3; it was the obvious-looking lever and it
+       left Settings > Zoom untouched at 100%. "Not roamable" is correct for a
+       scale: it is a property of the display this session is streamed to. -->
+  <component name="NotRoamableUiSettings">
+    <option name="ideScale" value="1.25" />
+  </component>
+</application>

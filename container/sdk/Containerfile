@@ -47,12 +47,26 @@ RUN set -eux; \
 
 # --- Android SDK (one or more API levels, no emulator) ----------------------
 # ANDROID_API_LEVELS / ANDROID_BUILD_TOOLS are space-separated lists — override
-# at build time, e.g. --build-arg ANDROID_API_LEVELS="33 34 35 36". The default
-# installs API 34 + 36 so both are available out of the box.
+# at build time, e.g. --build-arg ANDROID_API_LEVELS="33 34 35 36".
+#
+# THE LEVEL THE PLATFORM TREE TARGETS MUST BE IN THIS LIST. It is not a matter
+# of taste: the tree declares its own level in
+# `build/release/flag_values/<release>/RELEASE_PLATFORM_SDK_VERSION.textproto`,
+# and the IDE resolves framework APIs against `platforms/android-<level>`. Get
+# it wrong and the editor still opens — it just resolves against the wrong
+# android.jar, which is the kind of wrong that surfaces as confusing red
+# squiggles rather than an error anyone can act on.
+#
+# The default used to be "34 36" while the AAOS tree Belt builds pins 35 on
+# `trunk_staging` — so a rebuild at defaults would have shipped an image missing
+# the one level that tree needs. 35 is in the list for that reason; the codename
+# is no guide (PLATFORM_VERSION reads "Baklava" while the release config pins
+# 35). Re-check this on every AOSP uprev, against the textproto and not against
+# the version name.
 ARG ANDROID_SDK_ROOT=/opt/android-sdk
 ARG ANDROID_CMDLINE_TOOLS_VERSION=14742923
-ARG ANDROID_API_LEVELS="34 36"
-ARG ANDROID_BUILD_TOOLS="34.0.0 36.0.0"
+ARG ANDROID_API_LEVELS="34 35 36"
+ARG ANDROID_BUILD_TOOLS="34.0.0 35.0.0 36.0.0"
 ENV ANDROID_SDK_ROOT=/opt/android-sdk \
     ANDROID_HOME=/opt/android-sdk \
     JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 \
