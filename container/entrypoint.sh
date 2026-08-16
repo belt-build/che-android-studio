@@ -169,6 +169,13 @@ export ANDROID_SDK_ROOT ANDROID_HOME="${ANDROID_SDK_ROOT}"
 # settings/plugins persist — they're small, not mmap'd, and don't corrupt.
 # Per-flavor subdir keeps ASfP and Studio from sharing a system dir.
 IDE_SYSTEM_PATH="/tmp/che-ide/${IDE_CONFIG_DIRNAME}/system"
+# The mounted platform tree. Must match build-aosp's `tree-path` — the whole
+# warm-sharing contract rests on one absolute path (aaos-lane.md §6.1). Defined
+# HERE, with the other paths, because seed_first_run_state reads it and this
+# script runs under `set -u`: defining it later cost a CrashLoopBackOff whose
+# only symptom was `BELT_TREE_PATH: unbound variable` after eight successful
+# seeds.
+BELT_TREE_PATH="${BELT_TREE_PATH:-/aosp/src}"
 IDE_LOG_PATH="/tmp/che-ide/${IDE_CONFIG_DIRNAME}/log"
 mkdir -p "${IDE_SYSTEM_PATH}" "${IDE_LOG_PATH}" 2>/dev/null || true
 log "IDE system/caches relocated off idmapped PVC → ${IDE_SYSTEM_PATH}"
@@ -393,9 +400,6 @@ clear_stale_locks
 # Keyed by the IDE's data-directory name, so an index published by a different
 # ASfP build does not match this path and is ignored: a version check that costs
 # nothing.
-# The mounted platform tree. Must match build-aosp's `tree-path` — the whole
-# warm-sharing contract rests on one absolute path (aaos-lane.md §6.1).
-BELT_TREE_PATH="${BELT_TREE_PATH:-/aosp/src}"
 ASFP_INDEX_MOUNT="${ASFP_INDEX_MOUNT:-/belt/asfp-index}"
 seed_prebuilt_index() {
     local src="${ASFP_INDEX_MOUNT}/${IDE_CONFIG_DIRNAME}/system"
