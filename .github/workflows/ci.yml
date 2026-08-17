@@ -85,11 +85,35 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+
+      # THE RUNNER CANNOT HOLD THESE IMAGES AS SHIPPED. asfp-editor alone is
+      # ~6.95 GB and asfp-dev ~3.41 GB; five of them plus a mode=max cache
+      # export exceeds the ~30 GB a fresh ubuntu-latest has free, and the build
+      # died on the fourth image every time.
+      #
+      # Deleting the preinstalled toolchains buys back ~25 GB. Note the irony of
+      # the largest one: /usr/local/lib/android is a preinstalled Android SDK
+      # this build has no use for — it builds its own.
+      - name: Free runner disk
+        run: |
+          echo "before:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/share/powershell \
+                      /usr/share/swift "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo apt-get clean || true
+          echo "after:"; df -h / | tail -1
+
       - uses: docker/setup-buildx-action@v3
 
+      # ALWAYS, including PRs. The old comment said "PRs build without creds",
+      # which cannot work: asfp-dev/studio-dev are FROM ghcr.io/.../sdk, that
+      # package is private, and an unauthenticated pull 401s —
+      #   failed to fetch anonymous token: unexpected status from GET request
+      # so every PR build died on the second image. `load: true` on sdk did not
+      # save it either: setup-buildx-action creates a docker-CONTAINER driver,
+      # which cannot see the docker daemon local image store, so the FROM always
+      # resolves against the registry.
       - name: Log in to GHCR
-        # Only needed when we push (main / tags). PRs build without creds.
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -106,14 +130,15 @@ jobs:
           fi
           echo "sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
-      # sdk first — the dev images build FROM it. We load it into the local
-      # docker so the dev builds resolve FROM even when push=false (PRs).
+      # sdk first — the dev images build FROM it, BY DIGEST-TAG FROM THE
+      # REGISTRY, not from a local load. `load: true` is gone: the container
+      # driver cannot read the daemon store, so it was several GB of runner disk
+      # that nothing ever consulted.
       - name: Build sdk
         uses: docker/build-push-action@v6
         with:
           context: container
           file: container/sdk/Containerfile
-          load: true
           tags: |
             ${{ env.IMAGE_PREFIX }}/sdk:latest
             ${{ env.IMAGE_PREFIX }}/sdk:${{ steps.meta.outputs.sha }}
@@ -150,6 +175,15 @@ jobs:
           push: ${{ steps.meta.outputs.push }}
           cache-from: type=gha,scope=studio-dev
           cache-to: type=gha,scope=studio-dev,mode=max
+
+      # The editor images are the two biggest (~6.95 GB each) and they build
+      # back to back. buildx keeps its layer cache on the runner even when the
+      # result streams to the registry, so reclaim between them rather than
+      # discovering the ceiling again at the last step.
+      - name: Reclaim build cache
+        run: |
+          docker buildx prune -af --verbose 2>/dev/null | tail -2 || true
+          df -h / | tail -1
 
       - name: Build asfp-editor
         uses: docker/build-push-action@v6
