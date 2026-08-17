@@ -545,7 +545,25 @@ seed_first_run_state() {
     # Skip wizard + SDK path + IDE custom decorations. jdk.table.xml is generated
     # per installed API level (below), not seeded from a static template.
     seed_if_absent "ide-options/androidStudioFirstRun.xml" "${opts}/androidStudioFirstRun.xml"
-    seed_if_absent "ide-options/android.sdk.path.xml"      "${opts}/android.sdk.path.xml"
+    # ONLY IF THE SDK IS ACTUALLY THERE. This seeds
+    # AndroidSdkPathStore.androidSdkAbsolutePath, and ASfP believes it: pointed
+    # at a directory that does not exist, the IDE shows an empty "Android SDK
+    # Location" and
+    #
+    #   The Android SDK location cannot be at the filesystem root.
+    #
+    # which names neither the path nor the image that was supposed to supply it.
+    # Under the editor/toolchain split the SDK is a LAYER on the workspace's dev
+    # image, so its absence is a legitimate configuration (a pure platform-build
+    # image has none) and must be reported rather than papered over with a path
+    # that resolves nowhere.
+    if [ -d "${ANDROID_SDK_ROOT}/platforms" ] || [ -d "${ANDROID_SDK_ROOT}/platform-tools" ]; then
+        seed_if_absent "ide-options/android.sdk.path.xml"  "${opts}/android.sdk.path.xml"
+    else
+        log "no Android SDK at ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT} — not seeding android.sdk.path.xml"
+        log "  the IDE will show no SDK location. Layer an Android SDK into the dev image and"
+        log "  export ANDROID_SDK_ROOT from it; see hack/cluster/asfp-devimage-check.sh in belt."
+    fi
     generate_jdk_table                                     "${opts}/jdk.table.xml"
     # And point the PROJECT at it. The table above only says the build JDK
     # exists; misc.xml is what makes the project compile and debug with it.
@@ -567,6 +585,10 @@ seed_first_run_state() {
     seed_if_absent "ide-options/ide.general.xml"           "${opts}/ide.general.xml"
     seed_if_absent "ide-options/project.default.xml"       "${opts}/project.default.xml"
     seed_if_absent "ide-options/other.xml"                 "${opts}/other.xml"
+    # Credential store — see skel/ide-options/security.xml. Without it the IDE
+    # reports "cannot access the native keychain" on every start in a container
+    # that has no keyring, which is every dev container under the split.
+    seed_if_absent "ide-options/security.xml"              "${opts}/security.xml"
     # DISABLED PLUGINS. Lives in the config ROOT, not options/ — IntelliJ reads
     # `<config>/disabled_plugins.txt`, one plugin id per line, and silently
     # ignores it anywhere else. Comments and blanks are tolerated by the reader,

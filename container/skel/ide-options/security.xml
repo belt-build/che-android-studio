@@ -1,0 +1,17 @@
+<application>
+  <!-- WHERE THE IDE KEEPS CREDENTIALS.
+       Default is the NATIVE keychain (libsecret / gnome-keyring on Linux). A
+       dev container has neither — under the editor/toolchain split the IDE runs
+       in the workspace's own image, which is a build toolchain and has no
+       business shipping a desktop keyring — so the IDE reports
+         cannot access the native keychain
+       on every start, and any credential it is asked to store is lost.
+       KEEPASS is the IDE's own encrypted file store. It lands in the config
+       directory, which for these sessions is on the workspace PVC, so tokens
+       survive a restart the way a developer expects. MEMORY_ONLY would silence
+       the error too but drop everything on exit, which is a worse answer to
+       "why did it forget my token". -->
+  <component name="PasswordSafe">
+    <option name="PROVIDER" value="KEEPASS" />
+  </component>
+</application>
