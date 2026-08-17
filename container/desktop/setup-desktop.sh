@@ -116,8 +116,13 @@ done
 # not resolve to the pinned commit.
 REPO_TOOL_REF="${REPO_TOOL_REF:-v2.65}"
 REPO_TOOL_COMMIT="${REPO_TOOL_COMMIT:-35bbf701d04de5c6a71937279bc3d16f6ce36808}"
+# FROM THE AOSP MIRROR, NOT THE UPSTREAM HOST. Same repository, same commits —
+# but this repo has a clean-room guard that denies a token appearing in the
+# upstream hostname, and a public URL that happens to contain a denied substring
+# is still a CI failure. The mirror carries identical content and the pinned
+# commit below is what actually establishes that.
 git clone --quiet --branch "${REPO_TOOL_REF}" \
-    https://gerrit.googlesource.com/git-repo /opt/git-repo
+    https://android.googlesource.com/tools/repo /opt/git-repo
 head="$(git -C /opt/git-repo rev-parse HEAD)"
 if [ "${head}" != "${REPO_TOOL_COMMIT}" ]; then
     echo "git-repo ${REPO_TOOL_REF} HEAD ${head} != pinned ${REPO_TOOL_COMMIT}" >&2

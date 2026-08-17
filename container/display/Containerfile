@@ -1,0 +1,147 @@
+# asfp-display — the thin X SERVER sidecar for the 'asfp-split' editor.
+#
+# Eclipse Che's canonical model injects the editor into the dev container; ASfP
+# couldn't follow it because Android Studio is a desktop app and KasmVNC is not
+# relocatable, so the 'asfp' editor grew its own 32Gi/16cpu runtime container
+# and ran the IDE there — which then needed the ENTIRE AOSP host toolchain and
+# drifted from examples/toolchains/aaos/Containerfile (see container/desktop/
+# setup-desktop.sh's AOSP_BUILD_TOOLS comment for the history).
+#
+# X11 is natively client/server over a unix socket, so the split only needs to
+# move the X SERVER out: this image carries Xvnc (via KasmVNC) + openbox and
+# NOTHING else. Android Studio itself runs as an ordinary X client in the
+# workspace's dev container, against DISPLAY=:1, talking to this container over
+# a shared /tmp/.X11-unix volume. That is why this image contains no Android
+# SDK, no IDE, and none of the AOSP build toolchain — carrying any of them here
+# would put this image back on the hook for tracking AOSP, which is the whole
+# problem this split exists to remove.
+#
+# PROVEN (do not re-litigate): an X client in belt's aaos-tools image completed
+# the handshake into a KasmVNC container of this shape (xdpyinfo: X.Org
+# 1.21.1.3), MIT-SHM negotiated, xeyes mapped a real window, and the socket
+# came up srwxrwxrwx — which is what lets uid 1000 in one image talk to a
+# same-numbered but differently-named uid 1000 in another. Do not tighten the
+# socket's permissions.
+#
+# DUPLICATION NOTE: the KasmVNC install, throwaway TLS cert, sub-path websocket
+# fix, and arbitrary-UID passwd fix below are copied from
+# container/desktop/setup-desktop.sh rather than shared with it. That script is
+# deliberately the "everything the AOSP-capable dev image needs" layer — its
+# apt list alone pulls in the full AOSP host toolchain (rsync, bison, flex,
+# build-essential, the i386 dev libs, ...) which this image must never carry.
+# Splitting setup-desktop.sh into fine-grained, reusable pieces so both could
+# RUN the same script is a real option, but it means changing a script the
+# LAYERING RULE says this task may not touch (asfp-dev/studio-dev must keep
+# working unmodified). Four short, independently-verifiable blocks duplicated
+# here is a smaller, safer footprint than that refactor.
+#
+# Build (context = container/):
+#   podman build -t asfp-display:latest -f container/display/Containerfile container/
+
+FROM docker.io/library/ubuntu:22.04
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Keep in step with container/desktop/setup-desktop.sh's KASMVNC_VERSION — same
+# KasmVNC release everywhere in this repo.
+ARG KASMVNC_VERSION=1.4.0
+
+# --- Minimal package set ------------------------------------------------------
+# openbox: the window manager (decorates/places whatever windows the X client
+#   in the OTHER container creates — see container/openbox/rc.xml, copied
+#   below, which is what actually maximizes/undecorates the ASfP main window).
+# fonts-dejavu-core: base Latin glyphs for openbox's OWN chrome (title bars,
+#   on-screen move/resize popups). Deliberately NOT the CJK/emoji fonts
+#   setup-desktop.sh installs — those exist for the IDE's own UI, which never
+#   renders on this side of the socket; window titles here are ASCII in
+#   practice. Revisit if that stops being true.
+# ca-certificates, curl: fetch the KasmVNC .deb.
+# openssl: generate the throwaway TLS cert KasmVNC's cert-readability gate
+#   requires (see below).
+# python3: runs inject-subpath-fix.py at build time (a build-time tool only —
+#   it is not on PATH for anything at runtime).
+# NO dbus-x11: unlike the dev images, nothing here is a D-Bus client. The dev
+# entrypoint starts a session bus for the IDE (GTK file choosers, VCS
+# notifications, ...); openbox and Xvnc have no such dependency, so it is
+# omitted rather than carried "just in case".
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openbox \
+        fonts-dejavu-core \
+        ca-certificates curl openssl \
+        python3 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- KasmVNC (apt; non-relocatable, hence baked into this image) ------------
+RUN set -eux; \
+    deb=/tmp/kasmvncserver.deb; \
+    curl -fsSL -o "${deb}" \
+        "https://github.com/kasmtech/KasmVNC/releases/download/v${KASMVNC_VERSION}/kasmvncserver_jammy_${KASMVNC_VERSION}_amd64.deb"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends "${deb}"; \
+    rm -f "${deb}"; \
+    apt-get clean; rm -rf /var/lib/apt/lists/*
+
+# --- X11 socket dir (build-time fallback; the entrypoint re-does this at
+# runtime because the devfile's x11-socket volume mounts OVER this path and an
+# ephemeral volume can arrive with different ownership than what's baked here) -
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+
+# --- Throwaway TLS cert (satisfies KasmVNC's unconditional cert gate) --------
+# kasmvncserver always checks its configured cert+key exist and are READABLE,
+# even with require_ssl: false. The Debian snakeoil key lives under
+# /etc/ssl/private (0710), untraversable by the arbitrary UID. Generate our own
+# under a 0755 dir; the cert is NEVER used for TLS (the wire is plain HTTP,
+# same as the dev images — Che's gateway terminates TLS at the edge).
+RUN mkdir -p /etc/che-android-studio/pki \
+    && openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+        -subj "/CN=localhost" \
+        -keyout /etc/che-android-studio/pki/snakeoil.key \
+        -out /etc/che-android-studio/pki/snakeoil.pem \
+    && chmod 0755 /etc/che-android-studio /etc/che-android-studio/pki \
+    && chmod 0644 /etc/che-android-studio/pki/snakeoil.key /etc/che-android-studio/pki/snakeoil.pem \
+    && test -r /etc/che-android-studio/pki/snakeoil.pem \
+    && test -r /etc/che-android-studio/pki/snakeoil.key
+
+# --- noVNC sub-path websocket fix --------------------------------------------
+# KasmVNC's noVNC client (served from THIS container, since KasmVNC + port 6901
+# live here) opens its websocket at the host root by default; Che serves it
+# under a per-workspace sub-path. Same fix, same assets, as the dev images.
+COPY kasmvnc-subpath-fix.html /usr/share/che-android-studio/kasmvnc-subpath-fix.html
+COPY inject-subpath-fix.py    /usr/local/bin/che-android-studio-inject-subpath
+RUN chmod 0755 /usr/local/bin/che-android-studio-inject-subpath \
+    && python3 /usr/local/bin/che-android-studio-inject-subpath \
+    && grep -q 'che-android-studio: sub-path websocket fix' /usr/share/kasmvnc/www/index.html
+
+# --- openbox config -----------------------------------------------------------
+# The SAME rc.xml/theme the dev images use. Its window rules (maximize + no
+# decorations for WM class studio-asfp / jetbrains-*) matter MORE here than
+# there: in the split, openbox runs in THIS container, so it is what actually
+# places and undecorates the ASfP window the other container's X client
+# creates. NOTE: openbox postinst does not prompt (it has no conffiles that
+# conflict with ours the way the desktop layer's other packages do), so unlike
+# asfp-dev's Containerfile there is no COPY-after-install ordering constraint
+# here — but it's kept anyway for one-to-one consistency with the dev images.
+COPY openbox/rc.xml         /etc/xdg/openbox/rc.xml
+COPY openbox/dark-themerc   /usr/share/themes/StudioDark/openbox-3/themerc
+
+# --- Arbitrary-UID passwd/group fix ------------------------------------------
+# Same reasoning as setup-desktop.sh: under a restricted SCC this runs as an
+# arbitrary UID in group 0 with no /etc/passwd entry, and kasmvncserver/openbox
+# both call getpwuid(). Group-writable DBs cover the SCC case; the baked
+# uid-1000 entry covers plain Kubernetes, which starts this container as
+# uid=1000 gid=1000 (not group 0), where the entrypoint's runtime append has no
+# permission to append at all.
+RUN chmod g=u /etc/passwd /etc/group \
+    && if ! getent passwd 1000 >/dev/null 2>&1; then \
+           echo 'developer:x:1000:1000:che-android-studio display:/tmp/che-home:/bin/bash' >> /etc/passwd; \
+       fi \
+    && if ! getent group 1000 >/dev/null 2>&1; then \
+           echo 'developer:x:1000:' >> /etc/group; \
+       fi
+
+# --- Entrypoint ----------------------------------------------------------------
+COPY display/xstartup-display.sh /usr/local/bin/che-android-studio-display-entrypoint
+RUN chmod 0755 /usr/local/bin/che-android-studio-display-entrypoint
+
+WORKDIR /tmp
+EXPOSE 6901
+CMD ["/usr/local/bin/che-android-studio-display-entrypoint"]
