@@ -1,6 +1,6 @@
 name: ci
 
-# Test → build → smoke. On main: build + push all five images to GHCR. On PRs:
+# Test → build → smoke. On main: build + push all six images to GHCR. On PRs:
 # validate + build only (no push, so forks need no registry creds).
 on:
   push:
@@ -43,6 +43,7 @@ jobs:
           # `A && log ok || log warn` logging idiom is intentional — SC2015 info).
           shellcheck -S warning \
                      container/entrypoint.sh \
+                     container/display/xstartup-display.sh \
                      container/desktop/setup-desktop.sh \
                      hack/register-editors.sh
 
@@ -55,7 +56,8 @@ jobs:
           for f in container/sdk/Containerfile \
                    container/dev/asfp/Containerfile \
                    container/dev/studio/Containerfile \
-                   container/editor/Containerfile; do
+                   container/editor/Containerfile \
+                   container/display/Containerfile; do
             echo "hadolint $f"
             docker run --rm -i hadolint/hadolint hadolint \
               --failure-threshold error \
@@ -68,6 +70,7 @@ jobs:
           python -m pip install --quiet pyyaml
           # Editor definitions, samples, example devfile, argocd examples.
           for f in deploy/asfp-editor-definition.yaml \
+                   deploy/asfp-split-editor-definition.yaml \
                    deploy/studio-editor-definition.yaml \
                    deploy/getting-started-samples.yaml \
                    examples/devfile.yaml; do
@@ -176,6 +179,24 @@ jobs:
           cache-from: type=gha,scope=studio-dev
           cache-to: type=gha,scope=studio-dev,mode=max
 
+      # The asfp-split editor's display sidecar. Independent of everything
+      # above (it FROMs plain ubuntu and carries no SDK, no IDE and none of the
+      # AOSP toolchain), and a few hundred MB — so it builds before the two
+      # ~7 GB editor images rather than after them, where a disk ceiling would
+      # take it out. It MUST be published: asfp-split names this tag, and an
+      # absent sidecar is an editor that never starts.
+      - name: Build asfp-display
+        uses: docker/build-push-action@v6
+        with:
+          context: container
+          file: container/display/Containerfile
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/asfp-display:latest
+            ${{ env.IMAGE_PREFIX }}/asfp-display:${{ steps.meta.outputs.sha }}
+          push: ${{ steps.meta.outputs.push }}
+          cache-from: type=gha,scope=asfp-display
+          cache-to: type=gha,scope=asfp-display,mode=max
+
       # The editor images are the two biggest (~6.95 GB each) and they build
       # back to back. buildx keeps its layer cache on the runner even when the
       # result streams to the registry, so reclaim between them rather than
@@ -259,3 +280,30 @@ jobs:
           echo "===== container logs ====="; docker logs smoke 2>&1 | tail -60 || true
           docker rm -f smoke >/dev/null 2>&1 || true
           [ "$ok" = "1" ] || { echo "::error::KasmVNC did not serve on 6901"; exit 1; }
+
+      - name: Display smoke — the sidecar serves 6901 AND publishes the X socket
+        run: |
+          img="${IMAGE_PREFIX}/asfp-display:latest"
+          # The asfp-split half. Two claims, both load-bearing and both
+          # invisible at runtime when they break: KasmVNC answers on 6901 (the
+          # browser side), and Xvnc actually created /tmp/.X11-unix/X1 (the
+          # side the workspace's dev container connects to — a missing socket
+          # is what makes the IDE's launcher time out with an empty desktop).
+          # A `docker run` gets a plain container /tmp, where the devfile mounts
+          # the shared x11-socket volume; the socket has to appear either way.
+          docker run -d --name smoke-display "$img"
+          ok=0
+          for i in $(seq 1 90); do
+            if docker exec smoke-display curl -sf -o /dev/null http://127.0.0.1:6901/; then
+              ok=1; break
+            fi
+            sleep 2
+          done
+          if [ "$ok" = "1" ] && ! docker exec smoke-display test -S /tmp/.X11-unix/X1; then
+            echo "::error::KasmVNC serves 6901 but no X socket at /tmp/.X11-unix/X1"
+            ok=0
+          fi
+          echo "===== container logs ====="; docker logs smoke-display 2>&1 | tail -60 || true
+          docker rm -f smoke-display >/dev/null 2>&1 || true
+          [ "$ok" = "1" ] || { echo "::error::display sidecar smoke failed"; exit 1; }
+          echo "display smoke passed (HTTP 200 on 6901, X socket published)"

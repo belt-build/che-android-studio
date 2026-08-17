@@ -17,10 +17,33 @@
 # container component, and hard-coding one back in would just weld this
 # editor to a single toolchain again, the exact defect being fixed. postStart
 # here only brings up the X server in asfp-display. Launching the IDE against
-# DISPLAY=:1 is the WORKSPACE AUTHOR'S job: point the dev container at the
-# che-android-studio and x11-socket volumes below, set DISPLAY=:1, and exec
-# the IDE launcher there (Belt does this in its own dev container). That
-# indirection is what lets one editor definition serve many AOSP SDK images
+# DISPLAY=:1 is the WORKSPACE AUTHOR'S job, and the handover is exactly four
+# things (Belt's `belt workspace up` and the Backstage open-workspace action
+# both do them; internal/cli/workspace.go asfpSplitStartScript is the reference
+# implementation):
+#
+#   1. MOUNT — do not re-declare — the two volumes below in the dev container,
+#      at the same paths: che-android-studio -> /che-android-studio and
+#      x11-socket -> /tmp/.X11-unix. Both are declared HERE. A workspace
+#      template that declares either name again produces two components of one
+#      name in the flattened devfile, which the DevWorkspace Operator's merge
+#      rejects as a duplicate key — the workspace then fails before any pod
+#      exists.
+#   2. DISPLAY=:1 in the dev container's environment.
+#   3. Wait for /tmp/.X11-unix/X1 to appear. Nothing orders a container
+#      component against another container's postStart, so a dev container that
+#      launches immediately routinely beats KasmVNC to the socket and dies with
+#      "cannot open display".
+#   4. Run `ASFP_MODE=client /che-android-studio/entrypoint.sh`. That is the
+#      SAME session entrypoint the monolithic editor runs, in its client mode:
+#      it seeds first-run state, the vmoptions, the SDK/JDK table and the
+#      published IDE index, then runs Android Studio in a relaunch loop against
+#      the existing DISPLAY. It starts no X server and touches no socket. Do
+#      NOT exec ide/bin/studio directly — the seeding is not optional garnish;
+#      without it the session opens on the import wizard, on a 2G heap, and
+#      re-indexes the whole tree for ~40 minutes.
+#
+# That indirection is what lets one editor definition serve many AOSP SDK images
 # instead of pinning one — the whole point of the split.
 #
 # SIZE THE HOST DEV CONTAINER: Android Studio for Platform needs
@@ -63,17 +86,20 @@ commands:
 - id: start-display
   exec:
     component: asfp-display
-    # asfp-display is a single-purpose sidecar (unlike asfp-dev, which is both
-    # devcontainer and display), so its default container command just parks
-    # the container; the X server + KasmVNC only comes up here, backgrounded
-    # with nohup for the same reason asfp-runtime does it: postStart's exec
-    # is a Che command that must return, and kasmvncserver -fg does not.
-    # display-entrypoint.sh is the X-only half of container/entrypoint.sh —
-    # D-Bus, xstartup (openbox + wait, no IDE launch loop), kasmvnc.yaml,
-    # exec kasmvncserver. It must never grow an IDE-launch branch: the
-    # instant it can find and start Android Studio, this sidecar is exactly
-    # the coupling the split exists to remove.
-    commandLine: nohup /opt/che-android-studio/display-entrypoint.sh > /tmp/asfp-display.std.out 2>&1 &
+    # Same reason asfp-runtime needs the analogous start-asfp command below:
+    # a container component with no explicit command/args gets Che's
+    # controller-injected wait-forever entrypoint rather than the image's own
+    # CMD, precisely so commands can be exec'd into it here. Backgrounded
+    # with nohup because postStart's exec is a Che command that must return,
+    # and kasmvncserver -fg does not.
+    #
+    # che-android-studio-display-entrypoint (baked into asfp-display at
+    # /usr/local/bin, container/display/xstartup-display.sh) is the X-only
+    # counterpart of container/entrypoint.sh: D-Bus-free, xstartup runs
+    # openbox and nothing else, no IDE launch loop. It must never grow one —
+    # the instant this sidecar can find and start Android Studio itself, it
+    # is exactly the coupling the split exists to remove.
+    commandLine: nohup /usr/local/bin/che-android-studio-display-entrypoint > /tmp/asfp-display.std.out 2>&1 &
 events:
   preStart:
   - inject-asfp
@@ -97,6 +123,13 @@ components:
     cpuLimit: 500m
     cpuRequest: 30m
 - name: x11-socket
+  # DECLARED HERE, MOUNTED THERE. asfp-display below is a container in THIS
+  # contribution and it has to mount the socket directory, so the volume has to
+  # exist here; a workspace template that declares `x11-socket` again lands two
+  # components of one name in the flattened devfile and the merge fails on the
+  # duplicate key. Consuming templates mount it by name only — same rule as the
+  # che-android-studio volume above, which has always worked that way.
+  #
   # Ephemeral: the socket has no reason to outlive the pod, and the display
   # sidecar recreates it on every start anyway (kasmvncserver refuses to bind
   # over a stale one — see the lock cleanup in container/entrypoint.sh).
@@ -106,10 +139,12 @@ components:
   container:
     image: ghcr.io/kirkbrauer/che-android-studio/asfp-display:latest
     volumeMounts:
-    # che-android-studio: NOT for the IDE (this sidecar never touches it) —
-    # the injector also stages the shared KasmVNC/TLS assets
-    # (kasmvnc.yaml template, snakeoil pki, xstartup skeleton) into this
-    # volume, and the display sidecar is what actually consumes them.
+    # che-android-studio: mounted here per the interface contract with the
+    # dev container that hosts the IDE (both sides of the split see the same
+    # injected volume at the same path) — asfp-display's own KasmVNC/TLS
+    # config is self-contained and baked into the image, so nothing under
+    # here is read today. Kept for parity rather than removed, since a
+    # narrower mount is one more divergence for the next person to explain.
     - name: che-android-studio
       path: /che-android-studio
     # x11-socket: the whole point of the split. Whatever dev container hosts

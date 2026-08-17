@@ -28,14 +28,27 @@ DISPLAY_NUM=":1"
 # /tmp/.X11-unix is the devfile's x11-socket volume, mounted here AND in the
 # dev container. The Containerfile pre-creates+chmods this path too, but that
 # bake is a fallback only: an ephemeral volume mount REPLACES whatever was at
-# this path in the image the moment the pod starts, so the permissions that
-# matter are the ones set here, at runtime, after the mount lands. Sticky +
-# world-writable is the proven configuration (see the Containerfile's header
-# comment) — the dev container's client and this container's Xvnc are
-# different uids, and only a 1777 dir lets either of them create/open the
-# socket first.
-mkdir -p /tmp/.X11-unix
-chmod 1777 /tmp/.X11-unix
+# this path in the image the moment the pod starts, so what actually governs
+# behavior at runtime is whatever ownership/mode the volume itself shows up
+# with — NOT what the image baked.
+#
+# mkdir -p is a safe no-op if the mount already provided the directory (the
+# normal case). The chmod is deliberately best-effort, NOT `set -e`-fatal:
+# chmod requires OWNING the target, and under an arbitrary-UID SCC or a plain
+# Kubernetes uid this process very often does not own a root-created mount —
+# attempting it anyway and letting failure abort the container was tried and
+# is wrong: it turned a directory that was ALREADY sufficiently permissive
+# (Kubernetes' emptyDir default) into a hard crash-loop on a chmod nobody
+# needed. If the mount is NOT permissive enough, Xvnc's own bind() on the
+# socket fails next with a clear, specific error — a far better diagnostic
+# than this script dying one step earlier on a permission check that was
+# never the real requirement.
+mkdir -p /tmp/.X11-unix 2>/dev/null || true
+if chmod 1777 /tmp/.X11-unix 2>/dev/null; then
+    log "set /tmp/.X11-unix to 1777"
+else
+    log "WARN: not the owner of /tmp/.X11-unix, could not chmod it — trusting the mount's existing permissions"
+fi
 
 # --- Arbitrary-UID passwd/group entry ----------------------------------------
 # Same rationale as container/entrypoint.sh: under a restricted SCC this runs
@@ -150,7 +163,21 @@ network:
 KASMYAML
 log "wrote ${HOME}/.vnc/kasmvnc.yaml (require_ssl: false)"
 
-# --- Stale X lock cleanup -----------------------------------------------------
+# --- Stale lock cleanup -------------------------------------------------------
+# The xstartup single-instance lock above is a DIRECTORY removed by an EXIT
+# trap, and that trap does not run when the process is SIGKILLed — so a
+# surviving /tmp/che-as-session.lock parks BOTH invocations in `sleep infinity`
+# and openbox never starts. The window comes up unmanaged (no maximize, no
+# undecorate), which is a degradation nothing attributes to a leftover
+# directory. It matters MORE here than in the monolith: this container's PID 1
+# is Che's wait-forever command, so a re-exec of this entrypoint (a postStart
+# re-run, or a developer restarting the display by hand) inherits the whole of
+# /tmp without the container ever restarting. Cleared here, where the session
+# is provably new, exactly as container/entrypoint.sh does it.
+if rmdir /tmp/che-as-session.lock 2>/dev/null; then
+    log "removed a stale xstartup session lock"
+fi
+
 # Same reasoning as container/entrypoint.sh: kasmvncserver refuses a display
 # whose /tmp/.X<n>-lock exists ("A VNC server is already running as :1") and
 # exits, which reads as a failed container rather than a leftover lock file.

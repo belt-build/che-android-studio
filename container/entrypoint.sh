@@ -11,9 +11,28 @@
 # (Xkasmvnc) — do NOT run Xvfb (it would abort with "A VNC server is already
 # running"). The WM + IDE come up under ~/.vnc/xstartup, which KasmVNC runs.
 #
+# TWO MODES, ONE SCRIPT — set by ASFP_MODE, default `session`:
+#
+#   session (default, unchanged)  the 'asfp'/'android-studio' editors. This
+#       container is BOTH the X server and the IDE: dbus, ~/.vnc/xstartup
+#       (openbox + the IDE restart loop) and finally `exec kasmvncserver`.
+#   client                        the 'asfp-split' editor. The X server and
+#       KasmVNC live in the separate `asfp-display` sidecar and this script
+#       runs in the WORKSPACE's own dev container as an ordinary X client
+#       against DISPLAY, over the /tmp/.X11-unix socket both containers mount.
+#       Everything the IDE needs is identical; everything that OWNS a display
+#       is skipped. See the ASFP_MODE branch below for why each piece of the
+#       server half is actively harmful on the client side.
+#
+# The two modes share every line above that branch on purpose: the first-run
+# seeding, vmoptions, published-index restore, SDK/JDK wiring and git identity
+# are what make a session usable, and a second copy of them in a client-only
+# script is a second copy that drifts (which is the whole lesson of the split).
+#
 # Order: resolve assets → passwd entry for the arbitrary UID → writable HOME/XDG
-# → seed first-run state → dbus → xstartup (openbox + IDE restart loop) →
-# kasmvnc write-user + config → exec kasmvncserver (PID-1 of the session).
+# → seed first-run state → [client: dbus if present → IDE restart loop, END]
+# → dbus → xstartup (openbox + IDE restart loop) → kasmvnc write-user + config
+# → exec kasmvncserver (PID-1 of the session).
 
 set -euo pipefail
 
@@ -117,10 +136,16 @@ ensure_passwd_entry() {
 #      stop/start (IntelliJ couldn't lock a config dir that lived in ephemeral
 #      /tmp and carried a stale lock from an unclean shutdown).
 #   2. /home/developer — alternate mount (bare image dir if the PVC isn't here).
-#   3. /tmp/che-home — last-resort so the desktop still comes up (non-persistent).
+#   3. the image's OWN $HOME — whatever the container was built around. Under
+#      ASFP_MODE=client the image is the WORKSPACE's dev image, not one of ours,
+#      and it bakes its own uid-1000 home (belt/aaos-tools uses /home/builder):
+#      neither candidate above exists there, so without this the probe spends
+#      ~10s failing mkdir/touch on two root-owned paths before giving up. Not a
+#      persistence claim — set WORKSPACE_HOME to something on a PVC for that.
+#   4. /tmp/che-home — last-resort so the desktop still comes up (non-persistent).
 pick_writable_home() {
     local explicit="${WORKSPACE_HOME:-}" candidates
-    if [ -n "${explicit}" ]; then candidates="${explicit}"; else candidates="/home/user /home/developer /tmp/che-home"; fi
+    if [ -n "${explicit}" ]; then candidates="${explicit}"; else candidates="/home/user /home/developer ${HOME:-} /tmp/che-home"; fi
     for cand in ${candidates}; do
         for _ in $(seq 1 50); do   # up to ~5s each
             if mkdir -p "${cand}" 2>/dev/null && touch "${cand}/.asfp-write-test" 2>/dev/null; then
@@ -542,33 +567,104 @@ seed_git_identity() {
 seed_git_identity
 
 # --- D-Bus ------------------------------------------------------------------
-mkdir -p /tmp/dbus
-# A CONTAINER RESTART INHERITS /tmp, so the socket from the previous — dead —
-# session is still sitting there and dbus-daemon fails with
-#   Failed to bind socket "/tmp/dbus/session-bus": Address already in use
-# which exits the entrypoint, which restarts the container, which finds the same
-# socket. One crash for any reason becomes a permanent CrashLoopBackOff, and the
-# only clue is a bind error for a session nobody is running. Observed live.
+# $1 = "optional": a missing dbus-daemon is logged and tolerated instead of
+# aborting the script. Only the client mode passes it — see the ASFP_MODE
+# branch for why the dev image is not ours to impose a package set on.
+start_session_bus() {
+    local optional="${1:-}"
+    mkdir -p /tmp/dbus
+    # A CONTAINER RESTART INHERITS /tmp, so the socket from the previous — dead —
+    # session is still sitting there and dbus-daemon fails with
+    #   Failed to bind socket "/tmp/dbus/session-bus": Address already in use
+    # which exits the entrypoint, which restarts the container, which finds the same
+    # socket. One crash for any reason becomes a permanent CrashLoopBackOff, and the
+    # only clue is a bind error for a session nobody is running. Observed live.
+    #
+    # Safe because this runs before anything else in the session exists: a socket
+    # with no dbus-daemon behind it is by definition an orphan.
+    if [ -S /tmp/dbus/session-bus ] && ! pgrep -f 'dbus-daemon.*session-bus' >/dev/null 2>&1; then
+        rm -f /tmp/dbus/session-bus /tmp/dbus/session-addr
+        log "removed a stale D-Bus socket left by a previous session"
+    fi
+    if [ "${optional}" = optional ] && ! command -v dbus-daemon >/dev/null 2>&1; then
+        log "no dbus-daemon in this image; the IDE runs without a session bus"
+        return 0
+    fi
+    DBUS_ADDR_FILE=/tmp/dbus/session-addr
+    dbus-daemon --session --print-address=3 --fork \
+        --address="unix:path=/tmp/dbus/session-bus" 3>"${DBUS_ADDR_FILE}"
+    DBUS_SESSION_BUS_ADDRESS="$(cat "${DBUS_ADDR_FILE}")"
+    export DBUS_SESSION_BUS_ADDRESS
+    log "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}"
+}
+
+# --- Split ("client") session: the IDE runs here, the X server does not ------
+# ASFP_MODE=client is the `asfp-split` editor's shape: the X server, KasmVNC
+# and openbox are in the separate asfp-display sidecar, and THIS container —
+# the workspace's own dev container, chosen by the workspace and not by the
+# editor — runs Android Studio as an ordinary X client against the socket the
+# sidecar published in the shared /tmp/.X11-unix.
 #
-# Safe because this runs before anything else in the session exists: a socket
-# with no dbus-daemon behind it is by definition an orphan.
-if [ -S /tmp/dbus/session-bus ] && ! pgrep -f 'dbus-daemon.*session-bus' >/dev/null 2>&1; then
-    rm -f /tmp/dbus/session-bus /tmp/dbus/session-addr
-    log "removed a stale D-Bus socket left by a previous session"
+# Everything above is shared with the monolithic session. Everything below is
+# the X SERVER's half, and a client must run NONE of it:
+#
+#   * `rm -f /tmp/.X11-unix/X1` deletes the sidecar's LIVE socket. The mount is
+#     shared, so cleanup that is correct for a server that owns the display
+#     destroys the display for both containers; the dev-image contract is that
+#     this side never touches the socket directory.
+#   * `exec kasmvncserver` needs a binary the dev image deliberately does not
+#     carry (it holds the X CLIENT libraries only), and if it did carry it the
+#     two servers would fight over display :1 and websocket 6901.
+#   * ~/.vnc/{xstartup,kasmvnc.yaml,.kasmpasswd} are the sidecar's files. They
+#     also land in $HOME, which both containers can share, so writing them here
+#     is a race against the container that actually reads them.
+#
+# openbox is likewise the sidecar's: a window manager acts over the X protocol,
+# so it manages this container's windows from over there.
+if [ "${ASFP_MODE:-session}" = client ]; then
+    # DISPLAY is set on the dev container by whoever wrote the devfile (belt
+    # does; the portal does). Default it anyway so the script is runnable by
+    # hand in a terminal of that same container, which is the first thing
+    # anyone debugging this will do.
+    export DISPLAY="${DISPLAY:-${DISPLAY_NUM}}"
+    # D-Bus is optional HERE and only here. Requiring dbus-daemon of the dev
+    # image would put this editor back in the business of dictating the
+    # workspace's package set — the exact coupling the split removes — and the
+    # IDE runs without a session bus (GTK falls back; VCS notifications and the
+    # portal file chooser are what degrade). Under `set -e` an unguarded call
+    # to a missing binary is a silent exit 127 into a log nobody reads, which
+    # is how this failed the first time.
+    start_session_bus optional
+    if [ ! -x "${STUDIO_BIN}" ]; then
+        log "ERROR: ${STUDIO_BIN} not found/executable — the editor injected nothing into ${ASSET_BASE}"
+        exit 1
+    fi
+    log "split session: X client on DISPLAY=${DISPLAY}, server in the asfp-display sidecar"
+    # The same relaunch loop the monolithic session puts in ~/.vnc/xstartup, and
+    # for the same reason: the kiosk has no menu, so a dead IDE strands the
+    # developer in front of an empty desktop. Under the split it is also the
+    # ONLY supervision the IDE has — KasmVNC is in the other container and can
+    # neither see nor restart this process.
+    #
+    # BELT_OPEN_PROJECT is deliberately unquoted: empty must expand to NO
+    # argument at all, which is what opens the welcome screen when no tree is
+    # mounted (a quoted "" would be a request to open the directory "").
+    while true; do
+        log "starting ${STUDIO_BIN} ${BELT_OPEN_PROJECT}"
+        # shellcheck disable=SC2086
+        "${STUDIO_BIN}" ${BELT_OPEN_PROJECT} || log "IDE exited ($?); relaunching in 2s"
+        sleep 2
+    done
 fi
 
-# The xstartup single-instance lock is stale for exactly the same reason, and
-# fails WORSE: its EXIT trap does not run when the container is SIGKILLed, so a
-# surviving lock directory would park BOTH invocations and start no IDE at all.
-# Cleared here, where the session is provably new, rather than trusted to a trap.
+# The xstartup single-instance lock is stale for exactly the same reason as the
+# D-Bus socket, and fails WORSE: its EXIT trap does not run when the container is
+# SIGKILLed, so a surviving lock directory would park BOTH invocations and start
+# no IDE at all. Cleared here, where the session is provably new, rather than
+# trusted to a trap.
 rmdir /tmp/che-as-session.lock 2>/dev/null \
     && log "removed a stale xstartup session lock" || true
-DBUS_ADDR_FILE=/tmp/dbus/session-addr
-dbus-daemon --session --print-address=3 --fork \
-    --address="unix:path=/tmp/dbus/session-bus" 3>"${DBUS_ADDR_FILE}"
-DBUS_SESSION_BUS_ADDRESS="$(cat "${DBUS_ADDR_FILE}")"
-export DBUS_SESSION_BUS_ADDRESS
-log "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS}"
+start_session_bus
 
 # --- xstartup ---------------------------------------------------------------
 # KasmVNC runs ~/.vnc/xstartup once Xkasmvnc is up (-select-de manual keeps it

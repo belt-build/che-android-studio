@@ -27,8 +27,8 @@ CONTAINER_TOOL     ?= podman
 ANDROID_API_LEVELS ?= 34 35 36
 ANDROID_BUILD_TOOLS ?= 34.0.0 35.0.0 36.0.0
 
-# Five images across the split (build order matters: SDK first, then the dev
-# images that FROM it, then the injectors).
+# Six images (build order matters: SDK first, then the dev images that FROM it,
+# then the injectors; the display sidecar below is independent of all of them).
 SDK_IMAGE          ?= sdk
 ASFP_DEV_IMAGE     ?= asfp-dev
 STUDIO_DEV_IMAGE   ?= studio-dev
@@ -67,12 +67,24 @@ editor-images: ## Build both IDE injector images.
 	$(call build_image,$(ASFP_ED_IMAGE),container/editor/Containerfile,--build-arg IDE_FLAVOR=asfp)
 	$(call build_image,$(STUDIO_ED_IMAGE),container/editor/Containerfile,--build-arg IDE_FLAVOR=studio)
 
+# The 'asfp-split' editor's X-server/KasmVNC sidecar (container/display/). It
+# keeps its own target because it stands alone — it FROMs nothing of ours and
+# is a few hundred MB against the editor images' ~7 GB — but it is built and
+# pushed WITH the rest: the asfp-split definition names it by tag, so an
+# unpublished sidecar is an editor that can never start, and the only trace is
+# a warning from belt's `che-editors.sh mirror-images`.
+DISPLAY_IMAGE      ?= asfp-display
+
+.PHONY: display-image
+display-image: ## Build the asfp-split editor's thin display sidecar (Xvnc+openbox; no SDK, no IDE, no AOSP toolchain).
+	$(call build_image,$(DISPLAY_IMAGE),container/display/Containerfile)
+
 .PHONY: images
-images: sdk-image dev-images editor-images ## Build all five images (in order).
+images: sdk-image dev-images editor-images display-image ## Build all six images (in order).
 
 .PHONY: push
-push: ## Push all five images (:VERSION + :latest).
-	@for img in $(SDK_IMAGE) $(ASFP_DEV_IMAGE) $(STUDIO_DEV_IMAGE) $(ASFP_ED_IMAGE) $(STUDIO_ED_IMAGE); do \
+push: ## Push all six images (:VERSION + :latest).
+	@for img in $(SDK_IMAGE) $(ASFP_DEV_IMAGE) $(STUDIO_DEV_IMAGE) $(ASFP_ED_IMAGE) $(STUDIO_ED_IMAGE) $(DISPLAY_IMAGE); do \
 		$(CONTAINER_TOOL) push --tls-verify=$(TLS_VERIFY) $(IMAGE_PREFIX)/$$img:$(VERSION); \
 		$(CONTAINER_TOOL) push --tls-verify=$(TLS_VERIFY) $(IMAGE_PREFIX)/$$img:latest; \
 	done
