@@ -357,6 +357,41 @@ find_build_jdk() {
     return 1
 }
 
+# set_project_jdk — make the project's own XML name the build JDK.
+#
+# jdk.table.xml only says which SDKs EXIST. `<tree>/.idea/misc.xml` says which
+# one this project USES, and Android Studio writes it itself on first open,
+# choosing whatever JavaSDK it can find. Observed on a live session:
+#
+#   project-jdk-name="JBR-21" languageLevel="JDK_17"
+#
+# — the project pointed at the IDE's own runtime (and disagreed with it about
+# the language level). Registering a build JDK in the table changes nothing on
+# its own if the project never selects it.
+#
+# NEVER OVERWRITES A DEVELOPER'S CHOICE: it writes the file when absent, and
+# otherwise only rewrites a project-jdk-name that still names the IDE runtime.
+# Someone who deliberately picked a different JDK keeps it.
+set_project_jdk() {
+    local misc="$1" jdk_name="$2" lang="$3"
+    [ -n "${jdk_name}" ] || return 0
+    mkdir -p "$(dirname "${misc}")" 2>/dev/null || return 0
+    if [ ! -e "${misc}" ]; then
+        cat > "${misc}" <<MISC
+<project version="4">
+  <component name="ProjectRootManager" version="2" languageLevel="${lang}" default="true" project-jdk-name="${jdk_name}" project-jdk-type="JavaSDK" />
+</project>
+MISC
+        log "wrote ${misc} (project JDK ${jdk_name}, ${lang})"
+        return 0
+    fi
+    if grep -q "project-jdk-name=\"${JBR_SDK_NAME}\"" "${misc}" 2>/dev/null; then
+        sed -i "s|project-jdk-name=\"${JBR_SDK_NAME}\"|project-jdk-name=\"${jdk_name}\"|; \
+                s|languageLevel=\"[^\"]*\"|languageLevel=\"${lang}\"|" "${misc}" 2>/dev/null \
+            && log "repointed ${misc} from ${JBR_SDK_NAME} to ${jdk_name} (${lang})"
+    fi
+}
+
 generate_jdk_table() {
     local dst="$1" levels="${ANDROID_API_LEVELS:-}" lvl plat entries=""
     [ -e "${dst}" ] && return 0
@@ -414,6 +449,18 @@ generate_jdk_table() {
         log "no build JDK found (ANDROID_BUILD_JDK unset, no prebuilts/jdk in the tree, no JAVA_HOME)"
         log "  builds and debugging will use the IDE runtime, which is not the JDK the build used"
     fi
+    # WHICH JavaSDK THE ANDROID SDKs HANG OFF.
+    #
+    # An `Android SDK` entry is not self-contained: IntelliJ resolves it against
+    # a JavaSDK named in its <additional jdk="..."> attribute, and THAT is the
+    # JDK the project compiles and debugs with. The attribute was missing
+    # altogether, so the Android SDKs were bound to nothing and anything using
+    # them fell back to whatever JavaSDK happened to exist — the IDE's own
+    # runtime.
+    #
+    # Prefer the build JDK; fall back to the JBR only so the reference resolves
+    # to something rather than dangling, which IntelliJ reports as a broken SDK.
+    local sdk_jdk_name="${build_jdk_name:-${JBR_SDK_NAME}}"
     entries="${jdk_entry}"
 
     [ -n "${levels}" ] || {
@@ -447,7 +494,7 @@ generate_jdk_table() {
           </root>
         </sourcePath>
       </roots>
-      <additional sdk=\"android-${lvl}\" />
+      <additional jdk=\"${sdk_jdk_name}\" sdk=\"android-${lvl}\" />
     </jdk>
 "
     done
@@ -500,6 +547,23 @@ seed_first_run_state() {
     seed_if_absent "ide-options/androidStudioFirstRun.xml" "${opts}/androidStudioFirstRun.xml"
     seed_if_absent "ide-options/android.sdk.path.xml"      "${opts}/android.sdk.path.xml"
     generate_jdk_table                                     "${opts}/jdk.table.xml"
+    # And point the PROJECT at it. The table above only says the build JDK
+    # exists; misc.xml is what makes the project compile and debug with it.
+    # The language level is derived from the JDK itself rather than assumed —
+    # AAOS 14 lands on JDK_17 and Baklava on JDK_21, and hardcoding either is
+    # how they end up disagreeing.
+    if [ -n "${BELT_TREE_PATH:-}" ] && [ -d "${BELT_TREE_PATH}" ]; then
+        _bj="$(find_build_jdk || true)"
+        if [ -n "${_bj}" ]; then
+            _bjn="Build JDK ($(basename "$(dirname "${_bj}")"))"
+            # jdk21 -> JDK_21. Falls back to the IDE default when the directory
+            # is not named jdkNN, rather than writing a level that means nothing.
+            _lvl="$(basename "$(dirname "${_bj}")" | sed -n 's/^jdk\([0-9][0-9]*\)$/JDK_\1/p')"
+            [ -n "${_lvl}" ] && set_project_jdk "${BELT_TREE_PATH}/.idea/misc.xml" "${_bjn}" "${_lvl}"
+            unset _bjn _lvl
+        fi
+        unset _bj
+    fi
     seed_if_absent "ide-options/ide.general.xml"           "${opts}/ide.general.xml"
     seed_if_absent "ide-options/project.default.xml"       "${opts}/project.default.xml"
     seed_if_absent "ide-options/other.xml"                 "${opts}/other.xml"
