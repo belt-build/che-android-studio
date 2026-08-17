@@ -586,11 +586,39 @@ seed_first_run_state() {
     fi
     # Boot the IDE on the JCEF-enabled JBR (Cuttlefish view needs JCEF). The
     # *.jdk file is a one-line path to the runtime dir; create if absent.
-    if [ -d "${JCEF_JBR_DIR}" ] && [ ! -e "${cfg}/studio.jdk" ]; then
+    # studio.jdk names the runtime the IDE ITSELF executes on — not the build
+    # JDK (that is jdk.table.xml + misc.xml, see generate_jdk_table). It exists
+    # to point at a JCEF-capable JBR, because the IDE embeds Chromium for
+    # anything that renders web content.
+    #
+    # UNDER THE SPLIT THIS MOVED OUT FROM UNDER US. JCEF_JBR_DIR defaults to
+    # /opt/che-android-studio/jbr-jcef, which lived in the SDK base image the
+    # old single-container editor was built from. With the IDE now running in
+    # the workspace's own dev container, that path is simply absent, and the
+    # test below quietly skipped: no studio.jdk, no warning, and a session with
+    # zero jcef_helper processes where the old shape ran nine.
+    #
+    # So: prefer an explicit JCEF_JBR_DIR, else the INJECTED runtime if it
+    # actually carries JCEF, and otherwise SAY SO. Losing an embedded browser
+    # is a degradation a developer meets later, in a Markdown preview that
+    # renders blank, with nothing connecting it to a container boundary.
+    local jcef=""
+    if [ -d "${JCEF_JBR_DIR}" ]; then
+        jcef="${JCEF_JBR_DIR}"
+    elif [ -e "${IDE_HOME}/jbr/lib/libjcef.so" ] || [ -x "${IDE_HOME}/jbr/lib/jcef_helper" ]; then
+        # The injected runtime is JCEF-capable on its own: nothing to point at
+        # and nothing to warn about.
+        jcef="${IDE_HOME}/jbr"
+    fi
+    if [ -n "${jcef}" ] && [ ! -e "${cfg}/studio.jdk" ]; then
         mkdir -p "${cfg}" 2>/dev/null || true
-        printf '%s\n' "${JCEF_JBR_DIR}" > "${cfg}/studio.jdk" 2>/dev/null \
-            && log "seeded ${cfg}/studio.jdk → ${JCEF_JBR_DIR}" \
+        printf '%s\n' "${jcef}" > "${cfg}/studio.jdk" 2>/dev/null \
+            && log "seeded ${cfg}/studio.jdk → ${jcef}" \
             || log "WARN: failed to seed studio.jdk"
+    elif [ -z "${jcef}" ]; then
+        log "no JCEF-capable runtime found (JCEF_JBR_DIR=${JCEF_JBR_DIR} absent, injected JBR carries no JCEF)"
+        log "  the IDE runs, but anything embedding a browser — Markdown preview, docs panes — will not render"
+        log "  ship a JCEF JBR in the editor payload, or set JCEF_JBR_DIR to one in this image"
     fi
 }
 seed_first_run_state
