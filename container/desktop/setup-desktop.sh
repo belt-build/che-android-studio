@@ -51,8 +51,28 @@ APT_CONF_OPTS='-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-con
 # audit of the container then turned up FOURTEEN missing, `make`, `bison`, `flex`
 # and `zip` among them — so this is the documented AOSP host set rather than the
 # one tool that happened to fail first.
+#
+# KEPT IN STEP WITH belt's examples/toolchains/aaos/Containerfile, which is the
+# authoritative AOSP host set. The two lists live in different repositories and
+# had drifted in BOTH directions — this image was missing eleven the build image
+# has, and carried eight the build image does not. The eleven are added below;
+# the eight stay, because ASfP execs them here and the build image not needing
+# them is not evidence this one does not.
+#
+# `python-is-python3` is the quiet one: Soong wraps python3 as `python`, so
+# anything exec'ing bare `python` fails with no hint that a package is missing.
+# The 32-bit and X11 dev packages are the documented host set from
+# source.android.com "Establish a build environment" — host prebuilts link
+# against them.
+#
+# Belt's session preflight (aaosToolPreflight, internal/cli/aaossession.go)
+# names anything still missing at open, so the next drift arrives as one list
+# rather than as a build batch dying an hour in.
 AOSP_BUILD_TOOLS="rsync zip bc bison flex build-essential m4 gperf ccache xxd \
-                  lz4 zstd patch file libssl-dev zlib1g-dev libxml2-utils xsltproc"
+                  lz4 zstd patch file libssl-dev zlib1g-dev libxml2-utils xsltproc \
+                  wget gnupg procps python-is-python3 fontconfig \
+                  libc6-dev-i386 lib32z1-dev lib32ncurses-dev \
+                  x11proto-core-dev libx11-dev libgl1-mesa-dev"
 
 apt-get update
 apt-get install -y --no-install-recommends ${APT_CONF_OPTS} \
@@ -75,6 +95,41 @@ curl -fsSL -o "${deb}" \
     "https://github.com/kasmtech/KasmVNC/releases/download/v${KASMVNC_VERSION}/kasmvncserver_jammy_${KASMVNC_VERSION}_amd64.deb"
 apt-get install -y --no-install-recommends ${APT_CONF_OPTS} "${deb}"
 rm -f "${deb}"
+
+# --- AOSP host compatibility, mirroring belt's examples/toolchains/aaos ------
+#
+# ncurses .so.5 compat. Ubuntu 22.04 ships only the .so.6 runtimes and a few
+# AOSP host prebuilts still link libncurses.so.5 / libtinfo.so.5. Symlink the .6
+# runtimes to the .5 names so those tools load; harmless when unused. Absent
+# here, they fail with a loader error that names a library nobody installed.
+for lib in libncurses libncursesw libtinfo; do
+    so6="$(find /usr/lib /lib -name "${lib}.so.6" 2>/dev/null | head -n1)"
+    if [ -n "${so6}" ] && [ ! -e "$(dirname "${so6}")/${lib}.so.5" ]; then
+        ln -s "$(basename "${so6}")" "$(dirname "${so6}")/${lib}.so.5"
+    fi
+done
+
+# The Google git-repo tool. A development checkout is what an AAOS session
+# exists to produce, and `repo start` / `repo status` are how a developer moves
+# around ~1000 projects; without it the session opens on a tree it cannot
+# navigate. Same pin as belt's toolchain, and it FAILS CLOSED if the tag does
+# not resolve to the pinned commit.
+REPO_TOOL_REF="${REPO_TOOL_REF:-v2.65}"
+REPO_TOOL_COMMIT="${REPO_TOOL_COMMIT:-35bbf701d04de5c6a71937279bc3d16f6ce36808}"
+git clone --quiet --branch "${REPO_TOOL_REF}" \
+    https://gerrit.googlesource.com/git-repo /opt/git-repo
+head="$(git -C /opt/git-repo rev-parse HEAD)"
+if [ "${head}" != "${REPO_TOOL_COMMIT}" ]; then
+    echo "git-repo ${REPO_TOOL_REF} HEAD ${head} != pinned ${REPO_TOOL_COMMIT}" >&2
+    exit 1
+fi
+install -m 0755 /opt/git-repo/repo /usr/local/bin/repo
+
+# safe.directory '*' so git trusts the fsGroup-mounted, differently-owned sealed
+# checkout (Soong shells out to git for version stamping); LFS filters
+# registered system-wide for prebuilt-carrying trees.
+git config --system safe.directory '*'
+git lfs install --system --skip-repo
 
 apt-get clean
 rm -rf /var/lib/apt/lists/*
