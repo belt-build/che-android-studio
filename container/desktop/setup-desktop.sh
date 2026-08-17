@@ -38,6 +38,22 @@ APT_CONF_OPTS='-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-con
 # whose entire purpose is editing a git checkout was shipping without one — the
 # editor reported no executable found. git-lfs comes along because AOSP-adjacent
 # repos use it and a half-working clone is worse than an obvious failure.
+# THE AOSP BUILD TOOLCHAIN, because ASfP BUILDS IN THIS CONTAINER.
+#
+# The Containerfile above notes that "a heavier variant carrying a full Android
+# platform (AOSP) build toolchain can be layered on top of this base as a future
+# addition" — but ASfP does not shell out to some other container. A project
+# open runs `m` right here, so anything the build needs and this image lacks
+# fails a batch mid-sync, in the editor, at the point a developer is watching.
+#
+# Found the slow way: a build batch died on "/bin/sh: 1: rsync: not found" while
+# the same build succeeded in the pipeline, whose aaos-tools image has it. An
+# audit of the container then turned up FOURTEEN missing, `make`, `bison`, `flex`
+# and `zip` among them — so this is the documented AOSP host set rather than the
+# one tool that happened to fail first.
+AOSP_BUILD_TOOLS="rsync zip bc bison flex build-essential m4 gperf ccache xxd \
+                  lz4 zstd patch file libssl-dev zlib1g-dev libxml2-utils xsltproc"
+
 apt-get update
 apt-get install -y --no-install-recommends ${APT_CONF_OPTS} \
     openbox \
@@ -50,7 +66,8 @@ apt-get install -y --no-install-recommends ${APT_CONF_OPTS} \
     fonts-dejavu-core fonts-noto-cjk fonts-noto-color-emoji \
     ca-certificates curl unzip python3 openssl \
     desktop-file-utils \
-    git git-lfs
+    git git-lfs \
+    ${AOSP_BUILD_TOOLS}
 
 # --- KasmVNC (apt; non-relocatable, hence baked into the dev image) ---------
 deb=/tmp/kasmvncserver.deb
