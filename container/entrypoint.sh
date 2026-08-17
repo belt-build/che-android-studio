@@ -311,25 +311,45 @@ seed_if_absent() {
 #      editor/toolchain split the SDK is a layer on the dev image, and a layer
 #      that pins a JDK to its API level should be able to SAY so rather than
 #      have it guessed.
-#   2. The tree's own prebuilts/jdk/jdk<N>/linux-x86, highest N. For platform
-#      work this is correct by construction: it is the JDK soong builds with,
-#      pinned by the tree being edited, so it tracks the branch automatically.
+#   2. What the TREE ITSELF declares. AOSP names its build JDK in
+#      ANDROID_JAVA_HOME, and the branch being edited is the authority on which
+#      JDK its code compiles against — this tracks a branch automatically, with
+#      no table of versions to maintain here.
 #   3. JAVA_HOME, if the image set one.
 #   4. Nothing — the caller falls back to the JBR, which at least gives a
 #      defined project SDK rather than none.
+#
+# NOT BY VERSION NUMBER. An earlier version took the highest prebuilts/jdk/jdkN
+# it could find, which is wrong in the ordinary case rather than an edge case:
+# AAOS 14 / API 34 builds with JDK 17, and a tree mid-transition can ship 17 and
+# 21 side by side, so "highest" silently picks a JDK the branch does not build
+# with. Every tree carries jdk8 for legacy targets too. The version number is
+# not the question; what the branch declares is.
 find_build_jdk() {
-    local c n best=""
+    local declared abs
     if [ -n "${ANDROID_BUILD_JDK:-}" ] && [ -x "${ANDROID_BUILD_JDK}/bin/javac" ]; then
         echo "${ANDROID_BUILD_JDK}"; return 0
     fi
-    if [ -n "${BELT_TREE_PATH:-}" ]; then
-        # Highest version wins: a tree carrying jdk8 alongside jdk21 keeps jdk8
-        # for legacy targets, and jdk21 is what the platform builds with.
-        for n in 25 24 23 22 21 20 19 18 17 11; do
-            c="${BELT_TREE_PATH}/prebuilts/jdk/jdk${n}/linux-x86"
-            if [ -x "${c}/bin/javac" ]; then best="${c}"; break; fi
-        done
-        [ -n "${best}" ] && { echo "${best}"; return 0; }
+    if [ -n "${BELT_TREE_PATH:-}" ] && [ -d "${BELT_TREE_PATH}" ]; then
+        # Read the declaration rather than running the build to ask it:
+        # `_get_abs_build_var ANDROID_JAVA_HOME` is authoritative but needs a
+        # lunch and a kati pass, which is minutes and a product argument this
+        # function does not have. The assignment is a literal in the build
+        # sources, so grep answers the same question in milliseconds.
+        declared="$(grep -rhoE "ANDROID_JAVA_HOME=[^ \\]*" \
+            "${BELT_TREE_PATH}/build/soong/scripts/" "${BELT_TREE_PATH}/build/make/" \
+            2>/dev/null | head -1 | cut -d= -f2)"
+        if [ -n "${declared}" ]; then
+            case "${declared}" in
+                /*) abs="${declared}" ;;
+                *)  abs="${BELT_TREE_PATH}/${declared}" ;;
+            esac
+            # A declaration can name a path the checkout does not have (a
+            # partial sync, a manifest that omits that prebuilt). Verify before
+            # trusting it, and fall through rather than register a broken SDK.
+            if [ -x "${abs}/bin/javac" ]; then echo "${abs}"; return 0; fi
+            log "tree declares ANDROID_JAVA_HOME=${declared} but ${abs}/bin/javac is missing"
+        fi
     fi
     if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/javac" ]; then
         echo "${JAVA_HOME}"; return 0
