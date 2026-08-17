@@ -9,7 +9,21 @@
 #   - and, once that cache is excluded from the artifact, forces a rescan on
 #     open with "Reason: Rebuild requested for index com.google.aiplugin.rag.crawler".
 # So it was expensive whether it shipped or not.
-com.google.tools.ij.aiplugin
+#
+# BUT IT CANNOT BE DISABLED. Android Studio for Platform declares a HARD
+# dependency on it:
+#
+#   Plugin 'Android Studio for Platform' (com.google.idea.asfp) requires
+#     plugin with id=com.google.tools.ij.aiplugin to be enabled
+#
+# so listing it here disables ASfP itself — the product. The session then comes
+# up with a working IDE, a healthy EDT and no project at all, which is easy to
+# misread as a fast open: nothing indexes because nothing loaded. Measured that
+# way once, and the "zero indexing" it produced was meaningless.
+#
+# Its cost is real and still worth attacking, but through configuration rather
+# than by removing a dependency of the thing we are here to run.
+# com.google.tools.ij.aiplugin
 #
 # GOOGLE ACCOUNT SIGN-IN surfaces. There is no single "login" plugin; sign-in is
 # driven by the Google service integrations below, none of which an AAOS
