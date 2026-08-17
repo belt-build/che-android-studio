@@ -296,6 +296,47 @@ seed_if_absent() {
 # jdk.table.xml can't be a static template: the SDK image may carry any set of
 # API levels (ANDROID_API_LEVELS, e.g. "34 36"). Generate one "Android API <L>
 # Platform" <jdk> entry per level actually present under $ANDROID_SDK_ROOT.
+# find_build_jdk — the JDK BUILDS AND DEBUGGING should use, which is not the one
+# the IDE runs on.
+#
+# Android Studio brings its own JetBrains Runtime and always will; that is what
+# executes the IDE. It is the wrong JDK to compile or debug against, and the
+# difference is not academic — measured on this lane, the JBR was OpenJDK 21.0.9
+# while the AOSP tree pins prebuilts/jdk/jdk21 at 21.0.4. Both are "21". They are
+# different builds, so a debugger stepping into JDK internals sees sources that
+# do not match the class files the build produced.
+#
+# DISCOVERY ORDER, most specific first:
+#   1. ANDROID_BUILD_JDK — an explicit answer from the SDK layer. Under the
+#      editor/toolchain split the SDK is a layer on the dev image, and a layer
+#      that pins a JDK to its API level should be able to SAY so rather than
+#      have it guessed.
+#   2. The tree's own prebuilts/jdk/jdk<N>/linux-x86, highest N. For platform
+#      work this is correct by construction: it is the JDK soong builds with,
+#      pinned by the tree being edited, so it tracks the branch automatically.
+#   3. JAVA_HOME, if the image set one.
+#   4. Nothing — the caller falls back to the JBR, which at least gives a
+#      defined project SDK rather than none.
+find_build_jdk() {
+    local c n best=""
+    if [ -n "${ANDROID_BUILD_JDK:-}" ] && [ -x "${ANDROID_BUILD_JDK}/bin/javac" ]; then
+        echo "${ANDROID_BUILD_JDK}"; return 0
+    fi
+    if [ -n "${BELT_TREE_PATH:-}" ]; then
+        # Highest version wins: a tree carrying jdk8 alongside jdk21 keeps jdk8
+        # for legacy targets, and jdk21 is what the platform builds with.
+        for n in 25 24 23 22 21 20 19 18 17 11; do
+            c="${BELT_TREE_PATH}/prebuilts/jdk/jdk${n}/linux-x86"
+            if [ -x "${c}/bin/javac" ]; then best="${c}"; break; fi
+        done
+        [ -n "${best}" ] && { echo "${best}"; return 0; }
+    fi
+    if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/javac" ]; then
+        echo "${JAVA_HOME}"; return 0
+    fi
+    return 1
+}
+
 generate_jdk_table() {
     local dst="$1" levels="${ANDROID_API_LEVELS:-}" lvl plat entries=""
     [ -e "${dst}" ] && return 0
@@ -327,6 +368,31 @@ generate_jdk_table() {
 "
     else
         log "WARN: no bundled JBR at ${jbr}; project JDK will be undefined"
+    fi
+    # THE BUILD JDK, registered as its own JavaSDK next to the runtime one.
+    # Named for what it is so the picker is not two indistinguishable "21"s.
+    local build_jdk build_jdk_name="" 
+    if build_jdk="$(find_build_jdk)"; then
+        build_jdk_name="Build JDK ($(basename "$(dirname "${build_jdk}")"))"
+        jdk_entry="${jdk_entry}    <jdk version=\"2\">
+      <name value=\"${build_jdk_name}\" />
+      <type value=\"JavaSDK\" />
+      <homePath value=\"${build_jdk}\" />
+      <roots>
+        <annotationsPath><root type=\"composite\" /></annotationsPath>
+        <classPath><root type=\"composite\" /></classPath>
+        <javadocPath><root type=\"composite\" /></javadocPath>
+        <sourcePath><root type=\"composite\" /></sourcePath>
+      </roots>
+      <additional />
+    </jdk>
+"
+        log "build JDK: ${build_jdk} (${build_jdk_name})"
+    else
+        # Not a warning about the IDE — it will run fine on its JBR. A warning
+        # about BUILDS, which is a different and quieter kind of wrong.
+        log "no build JDK found (ANDROID_BUILD_JDK unset, no prebuilts/jdk in the tree, no JAVA_HOME)"
+        log "  builds and debugging will use the IDE runtime, which is not the JDK the build used"
     fi
     entries="${jdk_entry}"
 
