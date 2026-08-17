@@ -392,6 +392,12 @@ seed_first_run_state() {
     seed_if_absent "ide-options/ide.general.xml"           "${opts}/ide.general.xml"
     seed_if_absent "ide-options/project.default.xml"       "${opts}/project.default.xml"
     seed_if_absent "ide-options/other.xml"                 "${opts}/other.xml"
+    # DISABLED PLUGINS. Lives in the config ROOT, not options/ — IntelliJ reads
+    # `<config>/disabled_plugins.txt`, one plugin id per line, and silently
+    # ignores it anywhere else. Comments and blanks are tolerated by the reader,
+    # so the file explains itself; see skel/ide-options/disabled_plugins.txt for
+    # what is turned off and why.
+    seed_if_absent "ide-options/disabled_plugins.txt"      "${cfg}/disabled_plugins.txt"
     # recentProjects.xml carries the tree path, which is the CLUSTER's (the
     # workspace mounts it; see BELT_AAOS_TREE_PATH) — so it is substituted here
     # rather than baked, and the file is only seeded when the tree is actually

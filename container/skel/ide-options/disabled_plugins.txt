@@ -1,0 +1,27 @@
+# Plugins disabled for Belt AAOS sessions.
+#
+# GEMINI / THE AI ASSISTANT. The team uses Claude Code, so none of this is
+# wanted — and it is not free. Its RAG crawler builds a second, independent
+# index of the tree (com.google.aiplugin.rag.bm25.CrawlerBm25Indexer, walking
+# prebuilts/, out/soong/.intermediates and the rest), which:
+#   - grew caches/gemini to 10,019 MiB of a 14,815 MiB IDE system directory,
+#     68% of a published index artifact that every session COPIES;
+#   - and, once that cache is excluded from the artifact, forces a rescan on
+#     open with "Reason: Rebuild requested for index com.google.aiplugin.rag.crawler".
+# So it was expensive whether it shipped or not.
+com.google.tools.ij.aiplugin
+#
+# GOOGLE ACCOUNT SIGN-IN surfaces. There is no single "login" plugin; sign-in is
+# driven by the Google service integrations below, none of which an AAOS
+# platform session uses. Disabling them removes the account prompts.
+#
+# Direct Access (remote physical devices — Belt uses Jumpstarter).
+com.google.gct.directaccess
+# Firebase, and its test lab / test recorder.
+com.google.services.firebase
+com.google.gct.testing
+com.google.gct.test.recorder
+#
+# NOT disabled, deliberately: com.google.idea.asfp is Android Studio FOR
+# PLATFORM itself, and com.google.targetsdkversionassistant /
+# com.google.urlassistant are inert offline.
