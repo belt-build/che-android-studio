@@ -216,17 +216,35 @@ ls -la "/tmp/.X${DISPLAY_NUM#:}-lock" 2>/dev/null \
 # next to. 0644 rather than 0600 because "same uid" is a property of the images
 # we ship, not of an image a workspace brings.
 (
-    for _ in $(seq 1 120); do
+    # KEEP IT IN STEP, do not copy once. kasmvncserver rewrites the cookie
+    # while it starts, and a single copy loses the race: observed live with
+    # the published copy and the live file differing in content while sharing
+    # an mtime to the second, and the IDE failing every relaunch with
+    #
+    #   Invalid MIT-MAGIC-COOKIE-1 key
+    #   java.awt.AWTError: Can't connect to X11 window server using ':1'
+    #
+    # which is a worse failure than the missing cookie it replaced: the file
+    # exists, so everything looks configured.
+    #
+    # Compared by CONTENT rather than timestamp, precisely because the mtimes
+    # matched while the bytes did not. The file is ~136 bytes, so this costs
+    # nothing to run for the life of the container, and it also covers Xvnc
+    # regenerating the cookie on a restart.
+    published=0
+    while true; do
         if [ -s "${HOME}/.Xauthority" ] && [ -S "/tmp/.X11-unix/X${DISPLAY_NUM#:}" ]; then
-            cp "${HOME}/.Xauthority" /tmp/.X11-unix/.Xauthority.tmp 2>/dev/null \
-                && chmod 0644 /tmp/.X11-unix/.Xauthority.tmp 2>/dev/null \
-                && mv /tmp/.X11-unix/.Xauthority.tmp /tmp/.X11-unix/.Xauthority 2>/dev/null \
-                && log "published the X cookie for the dev container" \
-                && exit 0
+            if ! cmp -s "${HOME}/.Xauthority" /tmp/.X11-unix/.Xauthority 2>/dev/null; then
+                if cp "${HOME}/.Xauthority" /tmp/.X11-unix/.Xauthority.tmp 2>/dev/null \
+                    && chmod 0644 /tmp/.X11-unix/.Xauthority.tmp 2>/dev/null \
+                    && mv /tmp/.X11-unix/.Xauthority.tmp /tmp/.X11-unix/.Xauthority 2>/dev/null; then
+                    [ "${published}" = 0 ] && log "published the X cookie for the dev container"
+                    published=1
+                fi
+            fi
         fi
-        sleep 1
+        sleep 2
     done
-    log "WARN: no X cookie published after 120s — an X client in another container will be refused"
 ) &
 
 exec kasmvncserver "${DISPLAY_NUM}" \
