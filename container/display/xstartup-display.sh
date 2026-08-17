@@ -194,6 +194,41 @@ ls -la "/tmp/.X${DISPLAY_NUM#:}-lock" 2>/dev/null \
 # -DisableBasicAuth 1 is REQUIRED: -SecurityTypes None only covers the RFB
 # layer; the websocket server otherwise 401s every request (incl. /healthz) →
 # Che never goes healthy. kasmvncserver forwards unknown -Foo args to Xkasmvnc.
+# PUBLISH THE X COOKIE WHERE THE DEV CONTAINER CAN READ IT.
+#
+# kasmvncserver starts Xvnc with `-auth ${HOME}/.Xauthority`, and X then rejects
+# any client that cannot present the MIT-MAGIC-COOKIE from it. Under the split
+# the client is Android Studio in ANOTHER container, which sees none of this
+# container's HOME — so without this the handover fails with
+#
+#   java.awt.AWTError: Can't connect to X11 window server using ':1'
+#
+# on a display whose socket is present and healthy, which is a genuinely
+# confusing pair of facts to be handed.
+#
+# The shared socket directory is the one path both containers already mount, so
+# the cookie rides along beside the socket. Published in the BACKGROUND, after a
+# wait, because kasmvncserver writes the cookie while starting and this script
+# execs into it — there is no later point to do it from.
+#
+# Not a secret leak: this directory is inside the pod, both containers run as
+# uid 1000, and anything able to read it can already reach the socket it sits
+# next to. 0644 rather than 0600 because "same uid" is a property of the images
+# we ship, not of an image a workspace brings.
+(
+    for _ in $(seq 1 120); do
+        if [ -s "${HOME}/.Xauthority" ] && [ -S "/tmp/.X11-unix/X${DISPLAY_NUM#:}" ]; then
+            cp "${HOME}/.Xauthority" /tmp/.X11-unix/.Xauthority.tmp 2>/dev/null \
+                && chmod 0644 /tmp/.X11-unix/.Xauthority.tmp 2>/dev/null \
+                && mv /tmp/.X11-unix/.Xauthority.tmp /tmp/.X11-unix/.Xauthority 2>/dev/null \
+                && log "published the X cookie for the dev container" \
+                && exit 0
+        fi
+        sleep 1
+    done
+    log "WARN: no X cookie published after 120s — an X client in another container will be refused"
+) &
+
 exec kasmvncserver "${DISPLAY_NUM}" \
     -interface 127.0.0.1 \
     -websocketPort 6901 \
