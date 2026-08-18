@@ -63,11 +63,20 @@ ARG KASMVNC_VERSION=1.4.0
 # entrypoint starts a session bus for the IDE (GTK file choosers, VCS
 # notifications, ...); openbox and Xvnc have no such dependency, so it is
 # omitted rather than carried "just in case".
+# x11-utils / x11-apps are DIAGNOSTICS, and they earn their ~2 MB. This sidecar
+# owns the display for an IDE running in ANOTHER container, so when a session
+# looks wrong the first question is always "is anything actually on the screen",
+# and without xwininfo/xwd there is no way to ask it from here. It has already
+# cost real time: a stalled session had to be diagnosed by taking a JVM thread
+# dump and inferring a modal dialog from a stack trace, because nothing in the
+# pod could enumerate a window. xwd additionally allows capturing the
+# framebuffer, which turns "the user says the panel is blank" into an artifact.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openbox \
         fonts-dejavu-core \
         ca-certificates curl openssl \
         python3 \
+        x11-utils x11-apps \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- KasmVNC (apt; non-relocatable, hence baked into this image) ------------
