@@ -1,5 +1,5 @@
 <application>
   <component name="AndroidSdkPathStore">
-    <option name="androidSdkAbsolutePath" value="/opt/android-sdk" />
+    <option name="androidSdkAbsolutePath" value="__ANDROID_SDK_ROOT__" />
   </component>
 </application>

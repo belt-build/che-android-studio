@@ -398,7 +398,7 @@ MISC
 }
 
 generate_jdk_table() {
-    local dst="$1" levels="${ANDROID_API_LEVELS:-}" lvl plat entries=""
+    local dst="$1" levels="${ANDROID_API_LEVELS:-}" lvl plat entries="" src_path=""
     [ -e "${dst}" ] && return 0
     # Fall back to enumerating installed platforms if the env didn't list them.
     if [ -z "${levels}" ]; then
@@ -474,6 +474,24 @@ generate_jdk_table() {
     }
     for lvl in ${levels}; do
         [ -d "${ANDROID_SDK_ROOT}/platforms/android-${lvl}" ] || continue
+        # THE SOURCE ROOT ONLY WHEN IT EXISTS. This used to be emitted
+        # unconditionally, so an SDK installed without `sources;android-NN` —
+        # which is every SDK that installs only the platform and build-tools —
+        # got an <sdk> whose sourcePath named a directory that was not there.
+        # IntelliJ reports a root it cannot resolve as a broken SDK, which is a
+        # worse answer than having no sources: the SDK itself is fine.
+        src_path="        <sourcePath>
+          <root type=\"composite\" />
+        </sourcePath>"
+        if [ -d "${ANDROID_SDK_ROOT}/sources/android-${lvl}" ]; then
+            src_path="        <sourcePath>
+          <root type=\"composite\">
+            <root url=\"file://${ANDROID_SDK_ROOT}/sources/android-${lvl}\" type=\"simple\" />
+          </root>
+        </sourcePath>"
+        else
+            log "no sources for android-${lvl} (app-tier navigation into framework classes will not resolve)"
+        fi
         entries="${entries}    <jdk version=\"2\">
       <name value=\"Android API ${lvl} Platform\" />
       <type value=\"Android SDK\" />
@@ -493,11 +511,7 @@ generate_jdk_table() {
         <javadocPath>
           <root type=\"composite\" />
         </javadocPath>
-        <sourcePath>
-          <root type=\"composite\">
-            <root url=\"file://${ANDROID_SDK_ROOT}/sources/android-${lvl}\" type=\"simple\" />
-          </root>
-        </sourcePath>
+${src_path}
       </roots>
       <additional jdk=\"${sdk_jdk_name}\" sdk=\"android-${lvl}\" />
     </jdk>
@@ -580,7 +594,25 @@ seed_first_run_state() {
     # image has none) and must be reported rather than papered over with a path
     # that resolves nowhere.
     if [ -d "${ANDROID_SDK_ROOT}/platforms" ] || [ -d "${ANDROID_SDK_ROOT}/platform-tools" ]; then
-        seed_if_absent "ide-options/android.sdk.path.xml"  "${opts}/android.sdk.path.xml"
+        # SUBSTITUTED, NOT COPIED. The template used to carry a literal
+        # /opt/android-sdk, which is right for the SDK image this repo ships and
+        # wrong for every other one. Under the editor/toolchain split the SDK is
+        # a LAYER on whatever dev image the workspace chose, and that image
+        # announces its own root via ANDROID_SDK_ROOT — so a bring-your-own SDK
+        # at any other path got AndroidSdkPathStore pointed somewhere that does
+        # not exist, which surfaces as an empty "Android SDK Location" and
+        #
+        #   The Android SDK location cannot be at the filesystem root.
+        #
+        # naming neither the path nor the image. It worked here only because the
+        # two happened to agree.
+        if [ ! -e "${opts}/android.sdk.path.xml" ]; then
+            mkdir -p "${opts}" 2>/dev/null || true
+            sed -e "s|__ANDROID_SDK_ROOT__|${ANDROID_SDK_ROOT}|g" \
+                "${SKEL_DIR}/ide-options/android.sdk.path.xml" > "${opts}/android.sdk.path.xml" 2>/dev/null \
+                && log "seeded ${opts}/android.sdk.path.xml (${ANDROID_SDK_ROOT})" \
+                || log "WARN: failed to seed android.sdk.path.xml"
+        fi
     else
         log "no Android SDK at ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT} — not seeding android.sdk.path.xml"
         log "  the IDE will show no SDK location. Layer an Android SDK into the dev image and"
