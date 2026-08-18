@@ -1,1 +1,1 @@
-{"userId":"00000000-0000-0000-0000-000000000000","hasOptedIn":false,"debugDisablePublishing":false,"saltValue":__SALT_VALUE__,"saltSkew":__SALT_SKEW__,"lastOptinPromptVersion":"2025.3"}
+{"userId":"00000000-0000-0000-0000-000000000000","hasOptedIn":false,"debugDisablePublishing":false,"saltValue":__SALT_VALUE__,"saltSkew":__SALT_SKEW__,"lastOptinPromptVersion":"__PROMPT_VERSION__"}

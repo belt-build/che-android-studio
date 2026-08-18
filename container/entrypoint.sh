@@ -536,11 +536,28 @@ seed_first_run_state() {
         # A 60-digit decimal, the shape the IDE writes, from the kernel's RNG.
         _salt="$(od -An -N24 -tu8 /dev/urandom 2>/dev/null | tr -d ' \n' | cut -c1-58)"
         [ -n "${_salt}" ] || _salt="1"
+        # THE PROMPT VERSION MUST BE THE IDE'S OWN, NOT A LITERAL.
+        #
+        # analytics.settings records the version whose opt-in prompt was last
+        # answered. Android Studio re-prompts whenever its own version is newer
+        # than that string — so a hardcoded "2025.3" against an IDE calling
+        # itself 2025.3.2 asks on EVERY open, no matter that hasOptedIn is
+        # already false and the consent is already recorded. Reported from a
+        # live session doing exactly that.
+        #
+        # This is the same mistake derive_config_dirname exists to prevent, one
+        # field over: we once built "AndroidStudio2025.1" while the IDE used
+        # "AndroidStudio2025.1.1" and every seeded first-run file landed in a
+        # directory nothing read. Derived from dataDirectoryName for the same
+        # reason — it is what the IDE calls itself.
+        _pv="$(printf '%s' "${IDE_CONFIG_DIRNAME}" | sed -n 's/^[A-Za-z]*\([0-9].*\)$/\1/p')"
+        [ -n "${_pv}" ] || _pv="${ASFP_MAJOR_MINOR:-2025.3}"
         sed -e "s|__SALT_VALUE__|-${_salt}|" -e "s|__SALT_SKEW__|738|" \
+            -e "s|__PROMPT_VERSION__|${_pv}|" \
             "${SKEL_DIR}/android/analytics.settings" > "${HOME}/.android/analytics.settings" 2>/dev/null \
             && log "seeded ${HOME}/.android/analytics.settings (opted out, salt generated)" \
             || log "WARN: failed to seed analytics.settings"
-        unset _salt
+        unset _salt _pv
     fi
     # Skip wizard + SDK path + IDE custom decorations. jdk.table.xml is generated
     # per installed API level (below), not seeded from a static template.
