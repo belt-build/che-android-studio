@@ -73,6 +73,35 @@ ENV IDE_FLAVOR=${IDE_FLAVOR}
 # First-run seed templates + IDE vmoptions + the desktop session entrypoint.
 # These are copied into the shared volume by the injector command and consumed
 # by the entrypoint running in the dev container.
+# --- JCEF-enabled JetBrains Runtime ------------------------------------------
+# THE IDE'S BUNDLED JBR HAS NO JCEF, and ASfP's Cuttlefish view is a JCEF
+# webview: without this it reports "This feature requires a Java runtime with
+# JCEF" and the device panel is unusable.
+#
+# IT LIVES HERE, IN THE EDITOR PAYLOAD, and not in a dev image. It used to come
+# from the SDK base the old single-container editor was built FROM — so the
+# editor/toolchain split lost it the moment the IDE started running in the
+# workspace's own image, silently: nothing crashed, studio.jdk was simply never
+# written and a session ran with zero jcef_helper processes where the previous
+# shape ran nine. A browser runtime is a property of the EDITOR, exactly like
+# the JBR it sits beside; a toolchain image should never have had to carry it,
+# and a swapped one cannot be expected to.
+#
+# The build is PINNED TO THE IDE'S OWN JBR (21.0.9 … b1163.94, the version
+# `bin/studio` reports). A JCEF runtime that is not the runtime the IDE expects
+# is worse than none — it loads and then misbehaves in ways that look like IDE
+# bugs.
+ARG JCEF_JBR_VERSION=21.0.9-linux-x64-b1163.94
+ARG JCEF_JBR_URL=https://cache-redirector.jetbrains.com/intellij-jbr/jbr_jcef-${JCEF_JBR_VERSION}.tar.gz
+RUN set -eux; \
+    mkdir -p /opt/che-android-studio/jbr-jcef; \
+    curl -fsSL -o /tmp/jbr-jcef.tar.gz "${JCEF_JBR_URL}"; \
+    tar -xzf /tmp/jbr-jcef.tar.gz -C /opt/che-android-studio/jbr-jcef --strip-components=1; \
+    rm -f /tmp/jbr-jcef.tar.gz; \
+    # Fail the BUILD rather than ship a runtime without the thing it is for.
+    test -x /opt/che-android-studio/jbr-jcef/bin/java; \
+    ls /opt/che-android-studio/jbr-jcef/lib/libjcef.so >/dev/null
+
 COPY skel/                /opt/che-android-studio/skel/
 COPY studio.vmoptions     /opt/che-android-studio/studio.vmoptions
 COPY openbox/rc.xml       /opt/che-android-studio/openbox-rc.xml

@@ -89,7 +89,12 @@ log "IDE config dir = ${IDE_CONFIG_DIRNAME} (from product-info.json dataDirector
 
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/android-sdk}"
 # JCEF-enabled JBR (Cuttlefish view needs JCEF; the bundled IDE JBR lacks it).
-JCEF_JBR_DIR="${JCEF_JBR_DIR:-/opt/che-android-studio/jbr-jcef}"
+# Under the split this comes from the INJECTED payload — the editor carries its
+# own browser runtime, because the dev container is the workspace's choice and
+# may be any image at all. The old default named a path in the retired
+# single-container dev image, which simply does not exist in a toolchain image,
+# and the seed then skipped in silence.
+JCEF_JBR_DIR="${JCEF_JBR_DIR:-${ASSET_BASE}/jbr-jcef}"
 # The name the bundled JBR is registered under in jdk.table.xml, and referenced
 # by from the default project's project-jdk-name. The two must agree exactly —
 # a mismatch is silent and leaves the project JDK undefined, which is the bug
