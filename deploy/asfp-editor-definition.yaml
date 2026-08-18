@@ -41,7 +41,18 @@ components:
     command:
     - /bin/sh
     - -c
-    - set -eux; src=$(readlink -f /opt/che-ide); rm -rf /che-android-studio/ide; mkdir -p /che-android-studio/ide; cp -RL "$src/." /che-android-studio/ide/; cp -R /opt/che-android-studio/. /che-android-studio/
+      # -f ON THE SECOND COPY, and it is not cosmetic. The first copy clears
+      # its destination (rm -rf .../ide) so it always lands on an empty tree;
+      # this one copies onto the volume ROOT, which on a workspace RESTART is
+      # already populated. The JetBrains Runtime ships legal/*.md and
+      # lib/server/classes*.jsa read-only (0444), and cp cannot overwrite a
+      # read-only file without -f — so the injector died with
+      # "cp: cannot create regular file '.../jbr-jcef/legal/...': Permission
+      # denied", CrashLoopBackOff, and the workspace never came up.
+      #
+      # It only ever failed on the SECOND start, which is why it survived a long
+      # first session: an empty volume hides it completely.
+    - set -eux; src=$(readlink -f /opt/che-ide); rm -rf /che-android-studio/ide; mkdir -p /che-android-studio/ide; cp -RL "$src/." /che-android-studio/ide/; cp -Rf /opt/che-android-studio/. /che-android-studio/
     volumeMounts:
     - name: che-android-studio
       path: /che-android-studio
