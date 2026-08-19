@@ -8,8 +8,8 @@
 #
 # or via the optional Argo CD example under examples/argocd/.
 #
-# The editor-definition files (asfp-editor-definition.yaml,
-# studio-editor-definition.yaml) are BARE devfiles, not Kubernetes objects —
+# The editor-definition files (asfp-split-editor-definition.yaml,
+# studio-split-editor-definition.yaml) are BARE devfiles, not Kubernetes objects —
 # the dashboard reads them from LABELED ConfigMaps
 # (app.kubernetes.io/part-of=che.eclipse.org,
 #  app.kubernetes.io/component=editor-definition). configMapGenerator wraps each
@@ -30,17 +30,22 @@ resources:
 # Wrap each bare editor-definition devfile into a labeled editor-definition
 # ConfigMap the Che dashboard will serve at /dashboard/api/editors.
 configMapGenerator:
-  - name: che-android-studio-asfp-editor
+  # ONLY THE SPLIT EDITORS. The bundled-dev-container editors ('asfp',
+  # 'studio') are retired: an editor that ships its own dev container welds the
+  # IDE to one toolchain, and leaving them in the picker only offered users a
+  # way back into that. Both flavours below take their toolchain from the
+  # WORKSPACE's dev image, which is the point.
+  - name: che-android-studio-asfp-split-editor
     files:
-      - asfp-editor-definition.yaml
+      - asfp-split-editor-definition.yaml
     options:
       disableNameSuffixHash: true
       labels:
         app.kubernetes.io/part-of: che.eclipse.org
         app.kubernetes.io/component: editor-definition
-  - name: che-android-studio-studio-editor
+  - name: che-android-studio-studio-split-editor
     files:
-      - studio-editor-definition.yaml
+      - studio-split-editor-definition.yaml
     options:
       disableNameSuffixHash: true
       labels:

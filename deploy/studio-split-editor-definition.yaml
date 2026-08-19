@@ -1,81 +1,54 @@
-# asfp-split — the X-server-only editor, for ASfP running in YOUR dev container.
+# studio-split — the X-server-only editor, for Android Studio running in YOUR
+# dev container.
 #
-# WHY THIS EXISTS: the editor this replaced shipped its own dev container
-# (asfp-runtime), because a desktop app streamed over KasmVNC looked
-# inseparable from the X server that renders it. It is not: X11 is client/server over a unix socket, and a client in a totally
-# different image can complete the handshake against a KasmVNC-hosted X
-# server as long as they share /tmp/.X11-unix and the pod's IPC namespace
-# (verified experimentally — MIT-SHM negotiated, xeyes mapped a real window).
-# So here the X SERVER is isolated into a thin sidecar (asfp-display) and
-# Android Studio for Platform becomes an ordinary X client that runs wherever
-# the WORKSPACE'S OWN dev container is — the AOSP toolchain the developer
-# actually needs, not a second copy of it baked into the editor.
+# WHY THIS EXISTS: an editor that ships its own dev container welds the IDE to
+# one toolchain. A desktop app streamed over KasmVNC looks inseparable from the
+# X server that renders it, and it is not: X11 is client/server over a unix
+# socket, and a client in a totally different image completes the handshake
+# against a KasmVNC-hosted X server as long as they share /tmp/.X11-unix and the
+# pod's IPC namespace (verified experimentally — MIT-SHM negotiated, xeyes
+# mapped a real window). So the X SERVER is isolated into a thin sidecar
+# (asfp-display, shared with studio-split's sibling) and Android Studio becomes
+# an ordinary X client running wherever the WORKSPACE'S OWN dev container is —
+# the Android SDK the developer actually needs, not a second copy baked into the
+# editor.
 #
-# WHAT THIS FILE DOES NOT DO, ON PURPOSE: it does not start Android Studio.
-# It cannot — an editor definition has no way to name the workspace's dev
-# container component, and hard-coding one back in would just weld this
-# editor to a single toolchain again, the exact defect being fixed. postStart
-# here only brings up the X server in asfp-display. Launching the IDE against
-# DISPLAY=:1 is the WORKSPACE AUTHOR'S job, and the handover is exactly four
-# things (Belt's `belt workspace up` and the Backstage open-workspace action
-# both do them; internal/cli/workspace.go asfpSplitStartScript is the reference
-# implementation):
+# THE SIBLING, AND WHAT DIFFERS: asfp-split-editor-definition.yaml is this file
+# with a different payload. The split contract is IDE-AGNOSTIC — an injector
+# stages an IDE into a shared volume, a sidecar hosts the X server, and NEITHER
+# starts anything — so the only difference between the two is which image the
+# injector carries: studio-editor here (Android Studio, app tier, against a
+# baked Android SDK) and asfp-editor there (Android Studio for Platform, against
+# an AOSP tree). Keep them in step; a change to one is almost always a change to
+# both.
 #
-#   1. MOUNT — do not re-declare — the two volumes below in the dev container,
-#      at the same paths: che-android-studio -> /che-android-studio and
-#      x11-socket -> /tmp/.X11-unix. Both are declared HERE. A workspace
-#      template that declares either name again produces two components of one
-#      name in the flattened devfile, which the DevWorkspace Operator's merge
-#      rejects as a duplicate key — the workspace then fails before any pod
-#      exists.
-#   2. DISPLAY=:1 in the dev container's environment.
-#   3. Wait for /tmp/.X11-unix/X1 to appear. Nothing orders a container
-#      component against another container's postStart, so a dev container that
-#      launches immediately routinely beats KasmVNC to the socket and dies with
-#      "cannot open display".
-#   4. Run `ASFP_MODE=client /che-android-studio/entrypoint.sh`. That is the
-#      SAME session entrypoint the monolithic editor runs, in its client mode:
-#      it seeds first-run state, the vmoptions, the SDK/JDK table and the
-#      published IDE index, then runs Android Studio in a relaunch loop against
-#      the existing DISPLAY. It starts no X server and touches no socket. Do
-#      NOT exec ide/bin/studio directly — the seeding is not optional garnish;
-#      without it the session opens on the import wizard, on a 2G heap, and
-#      re-indexes the whole tree for ~40 minutes.
+# WHAT THIS FILE DOES NOT DO, ON PURPOSE: it does not start Android Studio. It
+# cannot — an editor definition has no way to name the workspace's dev container
+# component, and hard-coding one back in would weld this editor to a single
+# toolchain again, the exact defect being fixed. postStart here only brings up
+# the X server in asfp-display. Launching the IDE against DISPLAY=:1 is the
+# WORKSPACE AUTHOR'S job (Belt's `belt workspace up` and the Backstage
+# open-workspace action both do it; internal/cli/workspace.go
+# asfpSplitStartScript is the reference implementation).
 #
-# That indirection is what lets one editor definition serve many AOSP SDK images
-# instead of pinning one — the whole point of the split.
-#
-# SIZE THE HOST DEV CONTAINER: Android Studio for Platform needs
-# memoryRequest 16Gi / memoryLimit 48Gi / cpuLimit 16 wherever it actually
-# runs. That's the consuming dev container's resources, not anything in this
-# file — asfp-display below is deliberately tiny (it only ever draws pixels).
-# Forgetting to size the host container is a silent OOM on IDE open, not a
-# devfile validation error, so there is nothing here to catch it for you.
-#
-# THE NON-SPLIT EDITORS ARE RETIRED. This shipped alongside 'asfp' so the two
-# could be A/B compared, and the split won: it is the only shape that lets a
-# workspace choose its own toolchain image, which is the whole point of the
-# editor/toolchain split. Keeping a bundled-dev-container editor registered
-# only offered users a way to get an IDE welded to one toolchain, so 'asfp' and
-# 'studio' were removed rather than left as traps in the picker.
-#
-# THE SIBLING: studio-split-editor-definition.yaml is this file with a
-# different injector payload (studio-editor, the app tier against a baked
-# Android SDK). The split contract is IDE-agnostic, so a change here is almost
-# always a change there.
+# BELT DETECTS THIS BY THE `-split` SUFFIX, not by the flavour: see
+# asfpSplitEditorMarker in internal/cli/workspace.go. An editor built this way
+# whose id does not end in -split gets no volume mounts, no X socket and no
+# start script, and the workspace comes up healthy with an IDE that never
+# appears.
 schemaVersion: 2.2.2
 metadata:
-  name: asfp-split
-  displayName: Android Studio for Platform (split display)
-  description: Android Studio for Platform (AOSP) with the X server split into a sidecar, so the IDE runs in your own dev container's toolchain instead of a private copy of it
+  name: studio-split
+  displayName: Android Studio (split display)
+  description: Android Studio with the X server split into a sidecar, so the IDE runs in your own dev container's Android SDK instead of a private copy of it
   tags:
   - Android
-  - AOSP
-  - ASfP
+  - Studio
+  - SDK
   attributes:
     publisher: che-android-studio
     version: latest
-    title: Android Studio for Platform (split display)
+    title: Android Studio (split display)
     repository: https://github.com/kirkbrauer/che-android-studio
     firstPublicationDate: '2026-08-17'
     iconMediatype: image/svg+xml
@@ -87,7 +60,7 @@ metadata:
 commands:
 - id: inject-asfp
   apply:
-    component: asfp-injector
+    component: studio-injector
 - id: start-display
   exec:
     component: asfp-display
@@ -113,9 +86,9 @@ events:
 components:
 - name: che-android-studio
   volume: {}
-- name: asfp-injector
+- name: studio-injector
   container:
-    image: ghcr.io/kirkbrauer/che-android-studio/asfp-editor:latest
+    image: ghcr.io/kirkbrauer/che-android-studio/studio-editor:latest
     command:
     - /bin/sh
     - -c
