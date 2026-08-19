@@ -5,7 +5,7 @@ desktop inside **Eclipse Che** / OpenShift Dev Spaces. Open a browser, pick the
 editor, and a workspace pod boots with the IDE already running — no local
 install, no per-developer Android SDK download.
 
-[![ci](https://github.com/kirkbrauer/che-android-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/kirkbrauer/che-android-studio/actions/workflows/ci.yml)
+[![ci](https://github.com/belt-build/che-android-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/belt-build/che-android-studio/actions/workflows/ci.yml)
 &nbsp;Apache-2.0
 
 ## What it is
@@ -37,7 +37,7 @@ into a shared volume, and a `controller.devfile.io/container-contribution`
 | `asfp-dev` / `studio-dev` | The contribution runtimes (`FROM sdk` + the desktop layer: KasmVNC + openbox + GUI libs). The GUI is contributed into these; the user's terminal lives here. |
 | `asfp-editor` / `studio-editor` | The IDE injectors (`FROM ubuntu`, carry only the relocatable IDE `/opt` tree + entrypoint/seed assets), staged into the shared volume at workspace start. |
 
-Published to `ghcr.io/kirkbrauer/che-android-studio/<image>`.
+Published to `ghcr.io/belt-build/che-android-studio/<image>`.
 
 ## Quick start
 

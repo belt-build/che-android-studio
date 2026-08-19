@@ -1,7 +1,7 @@
 # che-android-studio — Eclipse Che + KasmVNC + Android Studio / ASfP dev
 # environment. Thin wrapper over podman/docker for the container builds.
 
-IMAGE_PREFIX       ?= ghcr.io/kirkbrauer/che-android-studio
+IMAGE_PREFIX       ?= ghcr.io/belt-build/che-android-studio
 VERSION            ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 TLS_VERIFY         ?= true
 # podman by default (the `push` target uses podman's --tls-verify flag). `docker`

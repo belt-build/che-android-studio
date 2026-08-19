@@ -8,7 +8,7 @@
 #   podman build -t studio-dev:latest -f container/dev/studio/Containerfile container/
 
 ARG SDK_TAG=latest
-ARG IMAGE_PREFIX=ghcr.io/kirkbrauer/che-android-studio
+ARG IMAGE_PREFIX=ghcr.io/belt-build/che-android-studio
 FROM ${IMAGE_PREFIX}/sdk:${SDK_TAG}
 ARG DEBIAN_FRONTEND=noninteractive
 

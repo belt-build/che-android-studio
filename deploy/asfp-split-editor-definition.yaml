@@ -76,7 +76,7 @@ metadata:
     publisher: che-android-studio
     version: latest
     title: Android Studio for Platform (split display)
-    repository: https://github.com/kirkbrauer/che-android-studio
+    repository: https://github.com/belt-build/che-android-studio
     firstPublicationDate: '2026-08-17'
     iconMediatype: image/svg+xml
     arch:
@@ -115,7 +115,7 @@ components:
   volume: {}
 - name: asfp-injector
   container:
-    image: ghcr.io/kirkbrauer/che-android-studio/asfp-editor:latest
+    image: ghcr.io/belt-build/che-android-studio/asfp-editor:latest
     command:
     - /bin/sh
     - -c
@@ -153,7 +153,7 @@ components:
     ephemeral: true
 - name: asfp-display
   container:
-    image: ghcr.io/kirkbrauer/che-android-studio/asfp-display:latest
+    image: ghcr.io/belt-build/che-android-studio/asfp-display:latest
     volumeMounts:
     # che-android-studio: mounted here per the interface contract with the
     # dev container that hosts the IDE (both sides of the split see the same
