@@ -1,10 +1,25 @@
 <application>
-  <!-- Appearance > Accessibility > Zoom, at 125%.
-       
-       Paired with KasmVNC's Native Resolution (enable_hidpi, seeded in
-       kasmvnc-subpath-fix.html): native resolution renders at the device's real
-       pixels, which is sharper and correspondingly smaller, so without this the
-       IDE is crisp and unreadable. The two ship together or not at all.
+  <!-- Appearance > Accessibility > Zoom.
+
+       A FALLBACK FOR AN UNATTENDED SESSION, and nothing more. Native resolution
+       (enable_hidpi, seeded in kasmvnc-subpath-fix.html) renders at the device's
+       real pixels, which is sharper and correspondingly smaller, so the IDE must
+       be scaled by the client's devicePixelRatio to come out at the right
+       physical size — and THIS IS NOT THE OPTION THAT DOES THAT.
+
+       Zoom scales TEXT ONLY. Measured by screenshotting a live IDE at 200%:
+       fonts grew while the toolbar, icons, tree rows, dialogs and status bar
+       stayed exactly where they were, which reads as a broken IDE rather than a
+       large one. The setting that moves the whole UI is the JVM's own
+       -Dsun.java2d.uiScale, which the workspace sets from the reported ratio;
+       when it does, it also pins THIS value to 1, because the two compound and
+       a DPR-2 session would otherwise render at 2 x 1.25.
+
+       So 1.25 is what a session gets only when no ratio is ever reported — a
+       headless start, or a deployment with no listener — which is the behaviour
+       this file had before reporting existed. A developer who sets their own
+       Zoom keeps it: the workspace records what it wrote and never overwrites a
+       value it did not leave behind.
 
        NotRoamableUiSettings/ideScale is what the Settings UI actually reads and
        writes — verified by changing the setting in a live IDE and finding it

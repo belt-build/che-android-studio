@@ -3,10 +3,20 @@
 # separate from ASfP's bundled bin/studio64.vmoptions so an IDE upgrade can't
 # clobber it and we don't have to edit a vendored file.
 #
-# UI scaling was intentionally NOT set here: forcing -Dsun.java2d.uiScale over
-# the KasmVNC stream didn't render cleanly (chrome scaled but editor font did
-# not, and native-resolution interactions were inconsistent). Users can set
-# their own scaling + editor font inside the IDE instead.
+# UI scaling is not set here because it is not KNOWABLE here: the right value is
+# the CLIENT's devicePixelRatio, which only the browser can report (see
+# kasmvnc-subpath-fix.html). The workspace supplies it at launch as
+# -Dsun.java2d.uiScale via _JAVA_OPTIONS.
+#
+# CORRECTING AN EARLIER NOTE. This file used to say -Dsun.java2d.uiScale
+# "rendered poorly (chrome scaled but editor font did not)". That does not
+# reproduce. Screenshotting the running IDE at each setting showed the opposite
+# split: Settings > Appearance > Zoom (NotRoamableUiSettings/ideScale) at 200%
+# scaled the FONTS ONLY, leaving the toolbar, icons, tree rows, dialogs and
+# status bar small — while -Dsun.java2d.uiScale=2 scaled chrome, icons, tree,
+# editor and console together. sun.java2d.uiScale is the setting to use; ideScale
+# is a personal zoom to sit on top of it, and the two compound, so a session
+# that sets the JVM scale pins Zoom back to 100%.
 
 # Custom window decorations: let the IDE draw its own header/title bar (paired
 # with openbox <decor>no</decor>) for a clean kiosk frame.

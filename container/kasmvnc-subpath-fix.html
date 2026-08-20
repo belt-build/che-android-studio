@@ -45,13 +45,19 @@
  * first act was to go and find the toggle.
  *
  * Turning it on renders at the device's real pixels, which is sharper and
- * correspondingly SMALLER — which is why the entrypoint pairs this with
- * -Dide.ui.scale=1.25. The two are one decision and must ship together; native
- * resolution alone gives you a crisp IDE you cannot read.
+ * correspondingly SMALLER, so it must be paired with an IDE scaled by the SAME
+ * ratio — native resolution alone gives you a crisp IDE you cannot read. That
+ * pairing used to be a hardcoded 1.25, which is right for no display in
+ * particular; the ratio is now reported by the block below and applied to
+ * `NotRoamableUiSettings/ideScale`. (It was never -Dide.ui.scale: that property
+ * does not back the Zoom control in ASfP 2025.3.)
  *
  * Seeded, not forced: settings live in plain localStorage under their bare
  * name, so this only fills in a value the user has never set. Toggle it in the
  * KasmVNC control panel afterwards and that choice sticks.
+ *
+ * The MATCHING IDE scale is no longer a hardcoded guess — see the DPR report
+ * below.
  */
 (function () {
   try {
@@ -62,5 +68,74 @@
     /* private-mode or blocked storage: the client falls back to its own
        default, which is the pre-existing behaviour. Never break the page. */
   }
+})();
+</script>
+
+<script>
+/* che-android-studio: report the client's device pixel ratio.
+ *
+ * WHY THIS EXISTS. Native resolution (above) makes the remote framebuffer
+ * `CSS pixels x devicePixelRatio`, so the IDE must be scaled by exactly that
+ * same ratio to come out at the right physical size. The ratio is a property
+ * of the BROWSER, and nothing in the RFB protocol carries it: SetDesktopSize
+ * sends width and height only, and Xvnc derives the screen's millimetres from
+ * a fixed 96 DPI, so `xdpyinfo` reports 96x96 no matter what the client did.
+ *
+ * That is why the scale cannot be inferred server-side. A 3636px-wide
+ * framebuffer is a DPR-2 window 1818 CSS px wide, or a DPR-1 window on a 4K
+ * panel — indistinguishable from the X server, and a 2560px-wide 1440p monitor
+ * at DPR 1 is exactly the case a width threshold gets wrong. So the client
+ * says it, out loud, and the workspace listens.
+ *
+ * THE CHANNEL is a sibling Che endpoint on DPR_PORT. Che publishes every
+ * endpoint of a workspace under the same host, one path segment apart
+ * (.../<workspace>/6901/ next to .../<workspace>/1445/), so this is a
+ * SAME-ORIGIN request: it carries the session cookie, needs no CORS, and
+ * cannot reach any other workspace. The listener on the far end is Belt's —
+ * see asfpScaleScript in internal/cli/workspace.go. THE PORT IS THE CONTRACT
+ * between the two repositories; change it in both or in neither.
+ *
+ * FAILS OPEN, ALWAYS. No listener (any deployment that is not Belt's), a 404,
+ * a blocked fetch — all land in the same catch and the session behaves exactly
+ * as it did before this block existed, with whatever scale the IDE was seeded
+ * with. This must never be able to stop a workspace from opening.
+ *
+ * Re-reported on change (dragging the window to a monitor with a different
+ * ratio, or changing browser zoom) so the value on disk stays true. The
+ * running IDE does NOT pick it up live — IntelliJ reads its scale at startup —
+ * so this takes effect on the next IDE start. Reporting anyway is what makes
+ * that next start correct without anyone having to think about it.
+ */
+(function () {
+  var DPR_PORT = '1445';
+  function endpoint() {
+    // ".../<workspace>/6901/" or ".../<workspace>/6901/vnc.html" -> keep the
+    // directory, swap the LAST segment (the port) for the reporter's.
+    var dir = window.location.pathname.replace(/[^/]*$/, '');
+    return dir.replace(/([^/]+)\/$/, DPR_PORT + '/');
+  }
+  var last = null;
+  function report() {
+    try {
+      var dpr = window.devicePixelRatio || 1;
+      if (dpr === last) return;
+      last = dpr;
+      // Keepalive so a report issued as the tab closes still leaves.
+      fetch(endpoint() + '?dpr=' + encodeURIComponent(dpr), {
+        method: 'GET', credentials: 'same-origin', keepalive: true,
+      }).catch(function () { last = null; });
+    } catch (e) {
+      /* never break the page */
+    }
+  }
+  report();
+  try {
+    window.addEventListener('resize', report);
+    // Firefox has no matchMedia change for DPR alone; resize covers zoom there.
+    if (window.matchMedia) {
+      var mq = window.matchMedia('(resolution: 1dppx)');
+      if (mq && mq.addEventListener) mq.addEventListener('change', report);
+    }
+  } catch (e) { /* best effort */ }
 })();
 </script>

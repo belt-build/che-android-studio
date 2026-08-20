@@ -220,16 +220,43 @@ Che's gateway only documents these protocols. KasmVNC was chosen because it
 speaks HTTPS+WebSocket; raw VNC TCP would not traverse the gateway. Selkies wants
 UDP/WebRTC and would need its own Service+Ingress + TURN/STUN — see STREAMING.md.
 
-### Remote desktop: bare window chrome, no forced scaling/resolution
+### Remote desktop: chrome, scaling and the streamed session
 
 - `openbox/rc.xml` sets `<decor>no</decor>` on the IDE window (single-app kiosk);
   the IDE draws its own header via `-Dide.win.frame.decorations=true` (passed via
   `STUDIO_VM_OPTIONS`). Dialogs keep decorations so they stay movable/closable.
-- **NO forced UI scaling / font size** — an earlier version forced
-  `-Dsun.java2d.uiScale`; it rendered poorly over the stream (chrome scaled, editor
-  font didn't). Users set their own.
-- **NO forced native resolution** — noVNC persists `resize` in localStorage so a
-  forced URL default was unreliable. Users pick the mode from the noVNC control bar.
+- **Native resolution is seeded ON.** `kasmvnc-subpath-fix.html` sets
+  `enable_hidpi` in localStorage if the user has never chosen — seeded, not
+  forced, so toggling it in the control bar sticks. It makes the framebuffer
+  `CSS px x devicePixelRatio`, which is sharp and correspondingly small, so it
+  only makes sense paired with a matching IDE scale.
+- **UI scale follows the CLIENT's devicePixelRatio.** That ratio is invisible
+  server-side — RFB's `SetDesktopSize` carries width and height only, and Xvnc
+  derives the screen's millimetres from a fixed 96 DPI — and it cannot be guessed
+  from the width: a 3636px framebuffer is DPR 2 in an 1818 CSS px window OR DPR 1
+  on a 4K panel, and a 2560px 1440p monitor at DPR 1 is where a threshold picks
+  wrong. So the page reports it to a sibling Che endpoint on **port 1445 — a
+  contract with belt's `asfpScaleScript`, change it in both repos or neither**.
+- **`sun.java2d.uiScale` is the lever; Zoom is not.** Measured by screenshotting
+  a live IDE: `NotRoamableUiSettings/ideScale` (Settings > Appearance > Zoom) at
+  200% scaled FONTS ONLY — toolbar, icons, tree rows, dialogs and status bar
+  stayed small — while `-Dsun.java2d.uiScale=2` scaled everything together. An
+  earlier note here claimed the reverse for uiScale; it does not reproduce.
+  `-Dide.ui.scale` backs neither control. Both text-only scales default to 1.25,
+  so whatever sets the JVM scale must pin them to 1 or a DPR-2 session renders at
+  2.5x. A developer's own Zoom is never overwritten once they set it.
+- **Put the flag in a vmoptions file, not `_JAVA_OPTIONS`.** Both work; the
+  environment variable makes the IDE warn on every start that such variables
+  "override IDE configuration files and may cause performance and stability
+  issues", which is a poor greeting from a setup that set it itself.
+- **The desktop dresses itself** (`display/xstartup-display.sh`): KasmVNC's own
+  splash JPEG becomes the openbox wallpaper, so the root window is not black for
+  the minutes ASfP takes to appear, and openbox is rescaled to the reported ratio
+  — label font, theme padding, border, AND generated XBM button masks. The masks
+  matter: openbox draws close/iconify/maximise from fixed-size bitmaps and
+  `StudioDark` ships none, so without them a scaled titlebar still carries ~7px
+  glyphs. The ratio reaches this container through the shared X11 socket volume,
+  the one path the workspace container also mounts.
 
 ## Deferred / possible follow-ups
 

@@ -108,6 +108,167 @@ ensure_passwd_entry "${HOME}"
 # container/entrypoint.sh uses for the IDE loop. Here it just guards openbox:
 # two window managers racing for the same X session is the same class of bug
 # either way, IDE or no IDE.
+# --- Desktop dressing: wallpaper + DPI-aware window decorations ---------------
+# Written as its own script because xstartup runs it under KasmVNC's DISPLAY,
+# and because both jobs have to survive openbox being reconfigured.
+#
+# THE WALLPAPER. Until the IDE maps its first window the root window is plain
+# black, which reads as a broken session rather than a starting one — and ASfP
+# takes a while. KasmVNC already ships a splash image for its own connect
+# screen, so reuse it: same artwork the developer just watched while the
+# workspace started, no new asset, nothing to keep in sync. Its filename
+# carries a content hash that changes between KasmVNC releases, hence the glob.
+#
+# THE DECORATIONS. openbox is an X client in THIS container and knows nothing
+# about the IDE's scale, so at a 2x device pixel ratio the IDE scales and its
+# dialog title bars do not — leaving close/maximise buttons a few device pixels
+# across and genuinely hard to hit. openbox has no DPI setting; what it has is a
+# titlebar sized from the label font and the theme's padding, so scaling those
+# two scales the decorations. Config is read-only in the image, but openbox
+# prefers ~/.config/openbox/rc.xml and ~/.themes, so the scaled copies go there.
+#
+# The ratio arrives from the BROWSER (see kasmvnc-subpath-fix.html) via the one
+# directory this container shares with the workspace's own — the X11 socket
+# volume. Watched rather than read once: it lands whenever the developer opens
+# the workspace, which may be after this script starts, and it changes again if
+# they move the window to a monitor with a different ratio.
+cat >"${HOME}/.vnc/belt-desktop.sh" <<'BELT_DESKTOP'
+#!/usr/bin/env bash
+# Fails open at every step: a session with black wallpaper and unscaled
+# decorations is worse-looking, not broken, and must never be worse than that.
+set -u
+DPR_FILE=/tmp/.X11-unix/.belt-dpr
+OB_CFG="${HOME}/.config/openbox"
+OB_THEME="${HOME}/.themes/StudioDark/openbox-3"
+SRC_RC=/etc/xdg/openbox/rc.xml
+SRC_THEME=/usr/share/themes/StudioDark/openbox-3/themerc
+
+log() { printf '[%s] [desktop] %s\n' "$(date -u +%H:%M:%SZ)" "$*"; }
+
+set_wallpaper() {
+    local img
+    img="$(ls -1 /usr/share/kasmvnc/www/assets/splash-*.jpg 2>/dev/null | head -1)"
+    # A solid backdrop FIRST, so even a missing/undecodable image leaves the
+    # IDE's own background colour rather than black.
+    xsetroot -solid '#2b2d30' 2>/dev/null || true
+    if [ -n "${img}" ] && command -v feh >/dev/null 2>&1; then
+        if feh --no-fehbg --bg-fill "${img}" 2>/dev/null; then
+            log "wallpaper set from ${img}"
+            return 0
+        fi
+    fi
+    log "no splash image usable; left the solid backdrop"
+}
+
+# scale <dpr> — regenerate the openbox config and theme at that ratio.
+scale_openbox() {
+    local dpr="$1" font pad_w pad_h border
+    # Round half-up without bc: openbox wants integers.
+    font="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (8*d)+0.5}')"
+    pad_w="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (6*d)+0.5}')"
+    pad_h="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (4*d)+0.5}')"
+    border="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (1*d)+0.5}')"
+    mkdir -p "${OB_CFG}" "${OB_THEME}" 2>/dev/null || return 1
+
+    # The theme: same file with the three pixel dimensions scaled.
+    if [ -r "${SRC_THEME}" ]; then
+        sed -e "s/^padding\.width:.*/padding.width: ${pad_w}/" \
+            -e "s/^padding\.height:.*/padding.height: ${pad_h}/" \
+            -e "s/^border\.width:.*/border.width: ${border}/" \
+            "${SRC_THEME}" > "${OB_THEME}/themerc" 2>/dev/null || return 1
+    fi
+
+    # The config: the shipped rc.xml with a <font> block per place, at the
+    # scaled size. Any existing blocks are dropped first so this is idempotent.
+    if [ -r "${SRC_RC}" ]; then
+        python3 - "${SRC_RC}" "${OB_CFG}/rc.xml" "${font}" <<'PYEOF' || return 1
+import re, sys
+src, dst, size = sys.argv[1], sys.argv[2], int(sys.argv[3])
+xml = open(src).read()
+# Drop any <font ...>...</font> we (or the image) put in before.
+xml = re.sub(r"[ \t]*<font place=.*?</font>\n?", "", xml, flags=re.S)
+places = ["ActiveWindow", "InactiveWindow", "MenuHeader", "MenuItem",
+          "ActiveOnScreenDisplay", "InactiveOnScreenDisplay"]
+block = "".join(
+    '    <font place="%s">\n'
+    "      <name>sans</name>\n"
+    "      <size>%d</size>\n"
+    "      <weight>normal</weight>\n"
+    "      <slant>normal</slant>\n"
+    "    </font>\n" % (p, size) for p in places)
+# openbox requires the fonts inside <theme>; append just before it closes.
+if "</theme>" in xml:
+    xml = xml.replace("</theme>", block + "  </theme>", 1)
+open(dst, "w").write(xml)
+PYEOF
+    fi
+    # THE BUTTON GLYPHS. A scaled titlebar grows the buttons' clickable area
+    # but NOT what is drawn in them: openbox renders close/iconify/maximise
+    # from XBM masks at their native pixel size, and StudioDark ships none, so
+    # it falls back to built-ins fixed at about 7px. At a 2x ratio that leaves
+    # a correctly sized title next to glyphs a developer has to aim at. Themes
+    # may supply their own masks (Bear2 in this image does), so generate them
+    # at the scaled size — the one lever openbox actually offers here.
+    python3 - "${OB_THEME}" "${dpr}" <<'PYEOF' || return 1
+import os, sys
+theme, dpr = sys.argv[1], float(sys.argv[2])
+n = max(7, int(round(7 * dpr)))
+t = max(1, int(round(n / 7.0)))          # stroke thickness, scaled with it
+
+def xbm(name, hit):
+    """Emit one XBM: rows padded to whole bytes, LSB = leftmost pixel."""
+    rowbytes = (n + 7) // 8
+    out = []
+    for y in range(n):
+        row = bytearray(rowbytes)
+        for x in range(n):
+            if hit(x, y):
+                row[x // 8] |= 1 << (x % 8)
+        out.extend(row)
+    body = ", ".join("0x%02x" % b for b in out)
+    with open(os.path.join(theme, name + ".xbm"), "w") as f:
+        f.write("#define %s_width %d\n#define %s_height %d\n"
+                "static unsigned char %s_bits[] = {\n %s };\n"
+                % (name, n, name, n, name, body))
+
+edge = n - 1
+xbm("close",   lambda x, y: abs(x - y) < t or abs(x + y - edge) < t)
+xbm("iconify", lambda x, y: y >= n - t - 1)
+box = lambda x, y: x < t or x >= n - t or y < t or y >= n - t
+xbm("max", box)
+xbm("max_toggled", box)
+xbm("shade",   lambda x, y: y < t)
+xbm("desk",    box)
+# Pressed/hover variants fall back to the base mask when absent, so the four
+# above are the whole visible set.
+PYEOF
+    log "openbox scaled for dpr=${dpr} (font ${font}, padding ${pad_w}x${pad_h}, border ${border}, masks $(( 7 * ${dpr%.*} ))px)"
+    openbox --reconfigure 2>/dev/null || true
+}
+
+set_wallpaper
+
+# Watch for the ratio. Poll rather than inotify: one stat every two seconds for
+# the life of a session costs nothing and adds no package.
+last=""
+while true; do
+    if [ -s "${DPR_FILE}" ]; then
+        dpr="$(cat "${DPR_FILE}" 2>/dev/null)"
+        case "${dpr}" in
+            ''|*[!0-9.]*) dpr="" ;;
+        esac
+        if [ -n "${dpr}" ] && [ "${dpr}" != "${last}" ]; then
+            scale_openbox "${dpr}" && last="${dpr}"
+            # openbox --reconfigure repaints the root, so restore the wallpaper.
+            set_wallpaper
+        fi
+    fi
+    sleep 2
+done
+BELT_DESKTOP
+chmod +x "${HOME}/.vnc/belt-desktop.sh"
+log "wrote ${HOME}/.vnc/belt-desktop.sh (wallpaper + DPI-aware decorations)"
+
 cat >"${HOME}/.vnc/xstartup" <<XSTARTUP
 #!/usr/bin/env bash
 export HOME="${HOME}"
@@ -127,6 +288,14 @@ trap 'rmdir /tmp/che-as-session.lock 2>/dev/null || true' EXIT
 # server is, because it decorates/places windows via the X protocol, not by
 # being co-located with the process that created them.
 openbox &
+
+# Wallpaper + DPI-aware decorations. Backgrounded and after openbox, because it
+# reconfigures openbox and repaints the root window that openbox owns.
+#
+# Logged to a FILE, not /dev/null: everything in there fails open, so when it
+# does fail the only evidence is a session that merely looks wrong — black
+# behind the IDE, or title bars that stayed small — with nothing to read.
+"${HOME}/.vnc/belt-desktop.sh" >/tmp/belt-desktop.log 2>&1 &
 
 # Keep the session alive so KasmVNC doesn't tear down the X server.
 wait
