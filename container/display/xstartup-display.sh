@@ -209,10 +209,19 @@ PYEOF
     # a correctly sized title next to glyphs a developer has to aim at. Themes
     # may supply their own masks (Bear2 in this image does), so generate them
     # at the scaled size — the one lever openbox actually offers here.
-    python3 - "${OB_THEME}" "${dpr}" <<'PYEOF' || return 1
+    # Sized against the TITLEBAR, not against the ratio directly. A flat 7*dpr
+    # tracks the font but not the button it sits in: at dpr 2 that is a 14px
+    # glyph inside a ~37px titlebar, which still reads as small and is still
+    # fiddly to hit. openbox gives the button a box roughly the titlebar's inner
+    # height (the label font plus its vertical padding), so derive from that and
+    # take a little over half of it.
+    local mask
+    mask="$(awk -v f="${font}" -v p="${pad_h}" \
+        'BEGIN{h=f*4/3+2*p; n=int(0.55*h+0.5); if(n<7)n=7; printf "%d", n}')"
+    python3 - "${OB_THEME}" "${mask}" <<'PYEOF' || return 1
 import os, sys
-theme, dpr = sys.argv[1], float(sys.argv[2])
-n = max(7, int(round(7 * dpr)))
+theme = sys.argv[1]
+n = int(sys.argv[2])
 t = max(1, int(round(n / 7.0)))          # stroke thickness, scaled with it
 
 def xbm(name, hit):
@@ -242,11 +251,70 @@ xbm("desk",    box)
 # Pressed/hover variants fall back to the base mask when absent, so the four
 # above are the whole visible set.
 PYEOF
-    log "openbox scaled for dpr=${dpr} (font ${font}, padding ${pad_w}x${pad_h}, border ${border}, masks $(( 7 * ${dpr%.*} ))px)"
+    log "openbox scaled for dpr=${dpr} (font ${font}, padding ${pad_w}x${pad_h}, border ${border}, masks ${mask}px)"
     openbox --reconfigure 2>/dev/null || true
+    start_compositor "${dpr}"
+}
+
+# start_compositor <dpr> — drop shadows under floating windows.
+#
+# WHY AT ALL. openbox draws a flat border in the theme's own colour, so a dialog
+# over the IDE has almost nothing separating it from what is behind it — on a
+# dark theme two stacked windows read as one surface, and it is genuinely hard
+# to tell which one has focus. A shadow is the cheapest depth cue there is.
+#
+# xrender, NOT glx: this X server has RENDER and Composite but no GL worth
+# speaking of, and picom on the glx backend against Xvnc either falls over or
+# software-renders every frame. Fading and blur stay OFF — both repaint large
+# regions continuously, and every repainted pixel here is a pixel KasmVNC has to
+# encode and ship to a browser.
+#
+# Fails open, and can be turned off outright with BELT_DESKTOP_SHADOWS=0 if a
+# session ever pays for it.
+start_compositor() {
+    local dpr="$1" radius offset
+    [ "${BELT_DESKTOP_SHADOWS:-1}" = "0" ] && return 0
+    command -v picom >/dev/null 2>&1 || return 0
+    radius="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (12*d)+0.5}')"
+    offset="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (-6*d)-0.5}')"
+    # ~/.config need not exist yet: this runs before the first scale pass, which
+    # is what otherwise creates it. Without this the heredoc below fails, picom
+    # starts on its DEFAULTS — no shadows, and a compositor running for nothing.
+    mkdir -p "${HOME}/.config" 2>/dev/null || return 0
+    cat >"${HOME}/.config/picom.conf" <<PICOM
+backend = "xrender";
+shadow = true;
+shadow-radius = ${radius};
+shadow-opacity = 0.45;
+shadow-offset-x = ${offset};
+shadow-offset-y = ${offset};
+fading = false;
+# The root/desktop window must not cast one — the wallpaper is not a window
+# floating over anything, and shadowing it just darkens the screen edges.
+shadow-exclude = [
+  "_NET_WM_WINDOW_TYPE@:a *= 'DESKTOP'",
+  "class_g = 'desktop_window'"
+];
+PICOM
+    # No config, no compositor. Starting one anyway gets picom's defaults, which
+    # is the cost of compositing without the shadow that was the entire point.
+    [ -s "${HOME}/.config/picom.conf" ] || {
+        log "WARN: could not write picom.conf; leaving windows with flat borders"
+        return 0
+    }
+    # Replace any picom from a previous ratio rather than stacking a second one;
+    # two compositors on one display fight over every damage event.
+    pkill -x picom 2>/dev/null || true
+    sleep 1
+    picom --config "${HOME}/.config/picom.conf" --daemon 2>/dev/null \
+        && log "compositor up (shadow radius ${radius}, offset ${offset})" \
+        || log "WARN: picom would not start; windows keep flat borders"
 }
 
 set_wallpaper
+# At 1x to begin with, so a session that is never reported on still gets its
+# depth cue; the watcher below re-tunes the radius once a ratio turns up.
+start_compositor 1
 
 # Watch for the ratio. Poll rather than inotify: one stat every two seconds for
 # the life of a session costs nothing and adds no package.

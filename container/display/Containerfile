@@ -77,7 +77,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl openssl \
         python3 \
         x11-utils x11-apps \
-        feh x11-xserver-utils \
+        feh x11-xserver-utils picom \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # --- KasmVNC (apt; non-relocatable, hence baked into this image) ------------
