@@ -163,10 +163,21 @@ set_wallpaper() {
 # scale <dpr> — regenerate the openbox config and theme at that ratio.
 scale_openbox() {
     local dpr="$1" font pad_w pad_h border
+    # The 1x baselines, multiplied by the ratio. TUNED BY EYE against a
+    # decorated window at 2x, not taken from openbox's defaults: those are 8pt
+    # with 6px of horizontal padding, which scales to a title noticeably smaller
+    # than the IDE's own chrome and to buttons packed hard against each other.
+    # 10pt and 8px scale to a 20pt title and a comfortable gap. Overridable
+    # because this is taste, and taste should not need a rebuild.
+    #
+    # padding.width is the ONLY spacing knob openbox offers here — it pads every
+    # titlebar element, so raising it separates the buttons AND narrows the
+    # label. 8 is the value where the buttons are comfortable and a real dialog
+    # title still fits; going to 10 started ellipsizing short titles.
     # Round half-up without bc: openbox wants integers.
-    font="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (8*d)+0.5}')"
-    pad_w="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (6*d)+0.5}')"
-    pad_h="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (4*d)+0.5}')"
+    font="$(awk -v d="${dpr}" -v b="${BELT_OB_FONT_PT:-10}" 'BEGIN{printf "%d", (b*d)+0.5}')"
+    pad_w="$(awk -v d="${dpr}" -v b="${BELT_OB_PAD_W:-8}" 'BEGIN{printf "%d", (b*d)+0.5}')"
+    pad_h="$(awk -v d="${dpr}" -v b="${BELT_OB_PAD_H:-4}" 'BEGIN{printf "%d", (b*d)+0.5}')"
     border="$(awk -v d="${dpr}" 'BEGIN{printf "%d", (1*d)+0.5}')"
     mkdir -p "${OB_CFG}" "${OB_THEME}" 2>/dev/null || return 1
 
@@ -217,7 +228,7 @@ PYEOF
     # take a little over half of it.
     local mask
     mask="$(awk -v f="${font}" -v p="${pad_h}" \
-        'BEGIN{h=f*4/3+2*p; n=int(0.55*h+0.5); if(n<7)n=7; printf "%d", n}')"
+        'BEGIN{h=f*4/3+2*p; n=int(0.5*h+0.5); if(n<7)n=7; printf "%d", n}')"
     python3 - "${OB_THEME}" "${mask}" <<'PYEOF' || return 1
 import os, sys
 theme = sys.argv[1]
